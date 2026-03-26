@@ -1,0 +1,36 @@
+# CLI
+
+- Binary name: `git-raft`
+- The repository-local config file is generated automatically at `.config/git-raft/config.toml`.
+- The optional user-level config file is `~/.config/git-raft/config.toml`.
+- The repository-local commit example file is generated automatically at `.config/git-raft/commit_examples.md`.
+- Model selection is configured under `[provider].model`.
+- Commit message format selection is configured under `[commit].format`.
+- Built-in commit format presets:
+  - `conventional`
+  - `angular`
+  - `gitmoji`
+  - `simple`
+- Built-in config commands:
+  - `config show [--scope user|repo|resolved]`
+  - `config get <key> [--scope user|repo|resolved]`
+  - `config set <key> <value> --scope user|repo`
+- Scope commands:
+  - `scopes generate`
+  - `scopes list`
+- `commit` is planner-driven.
+  - `commit --plan` prints a non-mutating plan.
+  - `commit --intent <text>` biases grouping and commit message generation.
+  - staged and unstaged changes are planned together by default.
+- Global flags:
+  - `--json`: emit NDJSON event output
+  - `--yes`: confirm high-risk operations
+- Current commands:
+  - `status`, `diff`, `add`, `commit`, `branch`, `switch`
+  - `sync`, `merge`, `rebase`, `stash`, `log`
+  - `ask`, `rollback`, `runs`, `trace`, `doctor`, `config`, `scopes`
+- Hook support:
+  - built-in rules live under `[hooks.rules]`
+  - external hooks live under `[[hooks.external]]`
+  - hook payloads use camelCase JSON keys
+- First-class git subcommands that are not explicitly modeled go through external passthrough, but still pass through the event stream and risk classification.

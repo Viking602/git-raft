@@ -1,0 +1,15 @@
+# Quality
+
+- Keep verification entry points here.
+- Prefer commands that reproduce results directly.
+- Common entry points are `cargo build`, `cargo test`, and `cargo run`.
+- Current shortest path:
+  - `cargo test --test cli`
+  - `cargo test --test guardrails`
+  - `cargo test`
+- Feature-specific checks worth running when this area changes:
+  - `cargo test config_show_merges_user_and_repo_sources --test cli`
+  - `cargo test scopes_generate_persists_and_lists_scope_candidates --test cli`
+  - `cargo test external_before_command_hook_receives_camel_case_payload --test cli`
+  - `cargo test commit_executes_single_group_when_plan_is_confident --test cli`
+- If manual checks are needed, record them here too, but keep them short.
