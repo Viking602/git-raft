@@ -35,6 +35,8 @@ pub enum CommandKind {
         #[arg(long)]
         plan: bool,
         #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
         intent: Option<String>,
         #[arg(long, value_enum)]
         language: Option<CommitLanguageArg>,

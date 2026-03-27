@@ -1,6 +1,7 @@
 mod ai;
 mod cli;
 mod commit;
+mod commands;
 mod config;
 mod events;
 mod git;
@@ -8,14 +9,16 @@ mod hooks;
 mod risk;
 mod store;
 
-use ai::{AiClient, AiPatch, collect_repo_context};
 use anyhow::{Context, Result, anyhow};
+use ai::AiClient;
 use clap::Parser;
 use cli::{
     Cli, CommandKind, CommitLanguageArg, ConfigCommand, ConfigScopeArg, ConfigWritableScopeArg,
     ScopesCommand,
 };
-use commit::{build_plan, collect_planning_inputs, generate_scopes, list_scopes};
+use commands::ai_tasks::{attempt_ai_resolution, maybe_apply_patch, run_ask};
+use commands::commit::{CommitRun, run_commit};
+use commit::{generate_scopes, list_scopes};
 use config::{ConfigKey, ConfigScope};
 use events::Emitter;
 use git::GitExec;
@@ -32,14 +35,6 @@ struct MergeRun {
     target: String,
     args: Vec<String>,
     apply_ai: bool,
-}
-
-struct CommitRun {
-    plan_only: bool,
-    intent: Option<String>,
-    language: Option<String>,
-    args: Vec<String>,
-    resolved_config: config::ResolvedConfig,
 }
 
 pub async fn run() -> Result<()> {
@@ -228,6 +223,7 @@ async fn dispatch_command(
         }
         CommandKind::Commit {
             plan,
+            dry_run,
             intent,
             language,
             args,
@@ -235,6 +231,7 @@ async fn dispatch_command(
             run_commit(
                 CommitRun {
                     plan_only: plan,
+                    dry_run,
                     intent,
                     language: language.map(CommitLanguageArg::as_str).map(str::to_string),
                     args,
@@ -758,200 +755,6 @@ async fn run_scopes(
     }
 }
 
-async fn run_commit(
-    request: CommitRun,
-    cwd: PathBuf,
-    repo: Option<git::RepoContext>,
-    store: Option<RunStore>,
-    emitter: &mut Emitter,
-) -> Result<()> {
-    let CommitRun {
-        plan_only,
-        intent,
-        language,
-        args: _args,
-        mut resolved_config,
-    } = request;
-    if let Some(language) = language {
-        resolved_config.commit.language = language;
-    }
-    let repo_ctx = repo.ok_or_else(|| anyhow!("commit requires a git repository"))?;
-    let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
-    let snapshot = git.inspect_snapshot().await?;
-    let local_hint_plan = build_plan(
-        &repo_ctx.root_dir,
-        &snapshot,
-        &resolved_config,
-        intent.as_deref(),
-    )?;
-    let planning_inputs = collect_planning_inputs(&snapshot, &resolved_config);
-    let client = AiClient::from_repo(Some(&repo_ctx))?;
-    let mut ai_context_config = client.config().clone();
-    ai_context_config.commit_format = resolved_config.commit.format.clone();
-    ai_context_config.commit_language = resolved_config.commit.language.clone();
-    ai_context_config.commit_use_gitmoji = resolved_config.commit.use_gitmoji;
-    ai_context_config.commit_include_body = resolved_config.commit.include_body;
-    ai_context_config.commit_include_footer = resolved_config.commit.include_footer;
-    ai_context_config.commit_ignore_paths = resolved_config.commit.ignore_paths.clone();
-    let repo_context = Some(collect_repo_context(&git, &repo_ctx, &ai_context_config).await);
-    let request = client.build_commit_request(
-        planning_inputs,
-        intent.clone(),
-        local_hint_plan,
-        &resolved_config.commit,
-        repo_context,
-    );
-    let request_summary = request.summary();
-    run_ai_hook(
-        "beforeAiRequest",
-        "commit",
-        &cwd,
-        &repo_ctx,
-        &resolved_config,
-        &snapshot,
-        Some(request.task_name()),
-        Some(&request_summary),
-        None,
-        None,
-        emitter,
-    )
-    .await?;
-
-    let exchange = client.execute(request, emitter, store.as_ref()).await?;
-    let response_summary = exchange.response_summary();
-    run_ai_hook(
-        "afterAiResponse",
-        "commit",
-        &cwd,
-        &repo_ctx,
-        &resolved_config,
-        &snapshot,
-        Some(exchange.task_name()),
-        Some(&request_summary),
-        Some(&response_summary),
-        exchange.patch_confidence(),
-        emitter,
-    )
-    .await?;
-    let plan = exchange.into_commit_plan()?;
-
-    let hook = run_hooks(HookContext {
-        event: "afterCommitPlan",
-        command: "commit",
-        repo: &repo_ctx,
-        cwd: &cwd,
-        config: &resolved_config,
-        git_snapshot: &snapshot,
-        intent: intent.as_deref(),
-        commit_plan: Some(&plan),
-        commit_group: None,
-        commit_message: None,
-        agent_task: None,
-        agent_request_summary: None,
-        agent_response_summary: None,
-        patch_confidence: None,
-    })
-    .await?;
-
-    emitter
-        .emit(
-            "tool_result",
-            Some("done"),
-            Some("commit_plan".to_string()),
-            Some(json!({
-                "plan": &plan,
-                "blocked": hook.blocked,
-                "reason": hook.reason.clone(),
-                "warnings": hook.warnings.clone(),
-            })),
-        )
-        .await?;
-
-    if hook.blocked {
-        emitter
-            .emit(
-                "commandFailed",
-                Some("plan"),
-                Some(
-                    hook.reason
-                        .unwrap_or_else(|| "hook blocked commit plan".to_string()),
-                ),
-                Some(json!({ "blocked": true })),
-            )
-            .await?;
-        return Err(anyhow!("hook blocked commit plan"));
-    }
-
-    if plan_only {
-        return Ok(());
-    }
-
-    for group in &plan.groups {
-        let group_hook = run_hooks(HookContext {
-            event: "beforeGroupCommit",
-            command: "commit",
-            repo: &repo_ctx,
-            cwd: &cwd,
-            config: &resolved_config,
-            git_snapshot: &snapshot,
-            intent: intent.as_deref(),
-            commit_plan: Some(&plan),
-            commit_group: Some(group),
-            commit_message: Some(&group.commit_message),
-            agent_task: None,
-            agent_request_summary: None,
-            agent_response_summary: None,
-            patch_confidence: None,
-        })
-        .await?;
-        if group_hook.blocked {
-            emitter
-                .emit(
-                    "commandFailed",
-                    Some("exec"),
-                    Some(
-                        group_hook
-                            .reason
-                            .unwrap_or_else(|| "hook blocked commit group".to_string()),
-                    ),
-                    Some(json!({ "blocked": true })),
-                )
-                .await?;
-            return Err(anyhow!("hook blocked commit group"));
-        }
-        let message = group_hook
-            .commit_message
-            .as_deref()
-            .unwrap_or(&group.commit_message)
-            .to_string();
-        git.stage_files(&group.files).await?;
-        git.create_commit(&message).await?;
-        let after_snapshot = git.inspect_snapshot().await?;
-        let _ = run_hooks(HookContext {
-            event: "afterGroupCommit",
-            command: "commit",
-            repo: &repo_ctx,
-            cwd: &cwd,
-            config: &resolved_config,
-            git_snapshot: &after_snapshot,
-            intent: intent.as_deref(),
-            commit_plan: Some(&plan),
-            commit_group: Some(group),
-            commit_message: Some(&message),
-            agent_task: None,
-            agent_request_summary: None,
-            agent_response_summary: None,
-            patch_confidence: None,
-        })
-        .await;
-    }
-
-    if let Some(store) = &store {
-        store.finish(RunStatus::Succeeded, None, Some(true))?;
-    }
-    Ok(())
-}
-
 fn map_config_scope(scope: ConfigScopeArg) -> ConfigScope {
     match scope {
         ConfigScopeArg::User => ConfigScope::User,
@@ -965,90 +768,6 @@ fn map_config_writable_scope(scope: ConfigWritableScopeArg) -> ConfigScope {
         ConfigWritableScopeArg::User => ConfigScope::User,
         ConfigWritableScopeArg::Repo => ConfigScope::Repo,
     }
-}
-
-async fn run_ask(
-    prompt: String,
-    cwd: PathBuf,
-    repo: Option<&git::RepoContext>,
-    resolved_config: config::ResolvedConfig,
-    store: Option<RunStore>,
-    emitter: &mut Emitter,
-) -> Result<()> {
-    if prompt.trim().is_empty() {
-        return Err(anyhow!("ask requires a prompt"));
-    }
-    let client = AiClient::from_repo(repo)?;
-    let repo_context = if let Some(repo_ctx) = repo {
-        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
-        Some(collect_repo_context(&git, repo_ctx, client.config()).await)
-    } else {
-        None
-    };
-    let request = client.build_ask_request(prompt, repo_context);
-    if let Some(repo_ctx) = repo {
-        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
-        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
-        let request_summary = request.summary();
-        run_ai_hook(
-            "beforeAiRequest",
-            "ask",
-            &cwd,
-            repo_ctx,
-            &resolved_config,
-            &snapshot,
-            Some(request.task_name()),
-            Some(&request_summary),
-            None,
-            None,
-            emitter,
-        )
-        .await?;
-    }
-
-    let exchange = client.execute(request, emitter, store.as_ref()).await?;
-    if let Some(repo_ctx) = repo {
-        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
-        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
-        let request_summary = exchange.request_summary();
-        let response_summary = exchange.response_summary();
-        run_ai_hook(
-            "afterAiResponse",
-            "ask",
-            &cwd,
-            repo_ctx,
-            &resolved_config,
-            &snapshot,
-            Some(exchange.task_name()),
-            Some(&request_summary),
-            Some(&response_summary),
-            exchange.patch_confidence(),
-            emitter,
-        )
-        .await?;
-    }
-    let reply = exchange.into_text()?;
-    emitter
-        .emit(
-            "verify_finished",
-            Some("verify"),
-            Some("received ai response".to_string()),
-            Some(json!({ "success": true })),
-        )
-        .await?;
-    if emitter.json_mode() {
-        emitter
-            .emit(
-                "tool_result",
-                Some("ai_wait"),
-                Some("ask result".to_string()),
-                Some(json!({ "text": reply })),
-            )
-            .await?;
-    } else {
-        println!("{reply}");
-    }
-    Ok(())
 }
 
 async fn run_rollback(
@@ -1221,244 +940,4 @@ async fn run_external(
         return Err(anyhow!("no external git command provided"));
     }
     run_git_passthrough(&args[0], args[1..].to_vec(), cwd, repo, store, emitter).await
-}
-
-async fn run_ai_hook(
-    event: &str,
-    command: &str,
-    cwd: &PathBuf,
-    repo: &git::RepoContext,
-    resolved_config: &config::ResolvedConfig,
-    git_snapshot: &git::GitSnapshot,
-    agent_task: Option<&str>,
-    agent_request_summary: Option<&serde_json::Value>,
-    agent_response_summary: Option<&serde_json::Value>,
-    patch_confidence: Option<f32>,
-    emitter: &mut Emitter,
-) -> Result<()> {
-    let decision = run_hooks(HookContext {
-        event,
-        command,
-        repo,
-        cwd,
-        config: resolved_config,
-        git_snapshot,
-        intent: None,
-        commit_plan: None,
-        commit_group: None,
-        commit_message: None,
-        agent_task,
-        agent_request_summary,
-        agent_response_summary,
-        patch_confidence,
-    })
-    .await?;
-    if decision.blocked {
-        let reason = decision
-            .reason
-            .unwrap_or_else(|| format!("hook blocked {event}"));
-        emitter
-            .emit(
-                "commandFailed",
-                Some("ai_wait"),
-                Some(reason.clone()),
-                Some(json!({ "blocked": true, "event": event })),
-            )
-            .await?;
-        return Err(anyhow!(reason));
-    }
-    Ok(())
-}
-
-async fn attempt_ai_resolution(
-    git: &GitExec,
-    command: &str,
-    cwd: &PathBuf,
-    repo: Option<&git::RepoContext>,
-    resolved_config: &config::ResolvedConfig,
-    conflicts: &[String],
-    store: Option<&RunStore>,
-    emitter: &mut Emitter,
-) -> Result<Option<AiPatch>> {
-    let client = match AiClient::config_from_repo(repo) {
-        Ok(_) => AiClient::from_repo(repo)?,
-        Err(_) => {
-            emitter
-                .emit(
-                    "phase_changed",
-                    Some("ai_wait"),
-                    Some(
-                        "provider not configured, leaving conflicts for manual review".to_string(),
-                    ),
-                    None,
-                )
-                .await?;
-            return Ok(None);
-        }
-    };
-
-    let repo_context = match repo {
-        Some(repo_ctx) => Some(collect_repo_context(git, repo_ctx, client.config()).await),
-        None => None,
-    };
-    let request = client
-        .build_conflict_request(git, conflicts, repo_context)
-        .await?;
-
-    if let Some(repo_ctx) = repo {
-        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
-        let request_summary = request.summary();
-        run_ai_hook(
-            "beforeAiRequest",
-            command,
-            cwd,
-            repo_ctx,
-            resolved_config,
-            &snapshot,
-            Some(request.task_name()),
-            Some(&request_summary),
-            None,
-            None,
-            emitter,
-        )
-        .await?;
-    }
-
-    let exchange = client.execute(request, emitter, store).await?;
-    if let Some(repo_ctx) = repo {
-        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
-        let request_summary = exchange.request_summary();
-        let response_summary = exchange.response_summary();
-        run_ai_hook(
-            "afterAiResponse",
-            command,
-            cwd,
-            repo_ctx,
-            resolved_config,
-            &snapshot,
-            Some(exchange.task_name()),
-            Some(&request_summary),
-            Some(&response_summary),
-            exchange.patch_confidence(),
-            emitter,
-        )
-        .await?;
-    }
-
-    let patch = exchange.into_patch()?;
-    if let Some(store) = store {
-        store.write_json("patch.json", &patch)?;
-    }
-    emitter
-        .emit(
-            "ai_patch_ready",
-            Some("ai_wait"),
-            Some("conflict patch generated".to_string()),
-            Some(json!({
-                "confidence": patch.confidence,
-                "files": patch.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-            })),
-        )
-        .await?;
-    Ok(Some(patch))
-}
-
-async fn maybe_apply_patch(
-    git: &GitExec,
-    command: &str,
-    cwd: &PathBuf,
-    repo: Option<&git::RepoContext>,
-    resolved_config: &config::ResolvedConfig,
-    patch: Option<AiPatch>,
-    store: Option<RunStore>,
-    emitter: &mut Emitter,
-) -> Result<()> {
-    let Some(patch) = patch else {
-        return Ok(());
-    };
-    if patch.confidence < 0.75 {
-        emitter
-            .emit(
-                "awaiting_confirmation",
-                Some("review"),
-                Some("ai confidence below 0.75; patch saved but not applied".to_string()),
-                Some(json!({ "confidence": patch.confidence })),
-            )
-            .await?;
-        return Ok(());
-    }
-
-    if let Some(repo_ctx) = repo {
-        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
-        let request_summary = json!({
-            "task": "resolve_conflicts",
-            "hasRepoContext": true,
-            "conflictFiles": patch.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-        });
-        let response_summary = json!({
-            "task": "resolve_conflicts",
-            "kind": "patch",
-            "patchConfidence": patch.confidence,
-            "fileCount": patch.files.len(),
-        });
-        run_ai_hook(
-            "beforePatchApply",
-            command,
-            cwd,
-            repo_ctx,
-            resolved_config,
-            &snapshot,
-            Some("resolve_conflicts"),
-            Some(&request_summary),
-            Some(&response_summary),
-            Some(patch.confidence),
-            emitter,
-        )
-        .await?;
-    }
-
-    for file in &patch.files {
-        git.write_file(&file.path, &file.resolved_content).await?;
-        git.run(&["add".to_string(), file.path.clone()], emitter)
-            .await?;
-    }
-    emitter
-        .emit(
-            "ai_patch_applied",
-            Some("exec"),
-            Some("applied conflict patch".to_string()),
-            Some(json!({
-                "confidence": patch.confidence,
-                "files": patch.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
-            })),
-        )
-        .await?;
-
-    let unresolved = git.unresolved_conflicts().await?;
-    let diff_clean = git.diff_check().await?;
-    let success = unresolved.is_empty() && diff_clean;
-    if let Some(store) = store {
-        store.finish(
-            if success {
-                RunStatus::Succeeded
-            } else {
-                RunStatus::Failed
-            },
-            None,
-            Some(success),
-        )?;
-    }
-    emitter
-        .emit(
-            "verify_finished",
-            Some("verify"),
-            Some("checked conflict resolution output".to_string()),
-            Some(json!({
-                "success": success,
-                "remaining_conflicts": unresolved,
-                "diff_check": diff_clean,
-            })),
-        )
-        .await?;
-    Ok(())
 }

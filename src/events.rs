@@ -2,6 +2,7 @@ use crate::store::RunStore;
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
+use std::io::{Write, stderr};
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
@@ -20,6 +21,7 @@ pub struct Emitter {
     json: bool,
     run_id: Uuid,
     store: Option<RunStore>,
+    ai_stream_open: bool,
 }
 
 impl Emitter {
@@ -28,6 +30,7 @@ impl Emitter {
             json,
             run_id,
             store,
+            ai_stream_open: false,
         }
     }
 
@@ -56,13 +59,17 @@ impl Emitter {
         if self.json {
             println!("{}", serde_json::to_string(&event)?);
         } else {
-            render_human(&event);
+            if self.ai_stream_open && event.event_type != "ai_response_delta" {
+                eprintln!();
+                self.ai_stream_open = false;
+            }
+            render_human(&event, &mut self.ai_stream_open);
         }
         Ok(())
     }
 }
 
-fn render_human(event: &Event) {
+fn render_human(event: &Event, ai_stream_open: &mut bool) {
     match event.event_type.as_str() {
         "git_stdout" => {
             if let Some(message) = &event.message {
@@ -72,6 +79,16 @@ fn render_human(event: &Event) {
         "git_stderr" => {
             if let Some(message) = &event.message {
                 eprintln!("{message}");
+            }
+        }
+        "ai_response_delta" => {
+            if let Some(message) = &event.message {
+                if !*ai_stream_open {
+                    eprintln!("[ai_wait] AI response stream:");
+                    *ai_stream_open = true;
+                }
+                eprint!("{message}");
+                let _ = stderr().flush();
             }
         }
         _ => {

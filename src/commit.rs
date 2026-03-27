@@ -1,12 +1,11 @@
 use crate::config::{CommitScope, ResolvedConfig};
 use crate::git::GitSnapshot;
-use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-const AUTO_COMMIT_MIN_CONFIDENCE: f32 = 0.8;
+const AUTO_SPLIT_MIN_CONFIDENCE: f32 = 0.85;
 const DEFAULT_IGNORED_TOOL_DIRS: &[&str] = &[
     ".codex",
     ".claude",
@@ -20,10 +19,21 @@ const DEFAULT_IGNORED_TOOL_DIRS: &[&str] = &[
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitPlan {
+    pub grouping_decision: GroupingDecision,
+    pub grouping_confidence: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub single_group: Option<CommitGroup>,
     pub groups: Vec<CommitGroup>,
     pub confidence: f32,
     pub warnings: Vec<String>,
     pub auto_executable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupingDecision {
+    Single,
+    Split,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,74 +52,101 @@ pub struct CommitPlanningInputs {
     pub untracked_files: Vec<String>,
 }
 
-pub fn build_plan(
-    root_dir: &Path,
-    snapshot: &GitSnapshot,
-    config: &ResolvedConfig,
-    intent: Option<&str>,
-) -> Result<CommitPlan> {
-    let planning = collect_planning_inputs(snapshot, config);
-    let files = planning.changed_files;
-    let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut warnings = Vec::new();
-    let mut exact_matches = 0usize;
-
-    for file in &files {
-        let (scope, exact) = infer_scope(file, &config.commit.scopes);
-        if exact {
-            exact_matches += 1;
+impl CommitPlan {
+    pub fn normalize_for_execution(mut self, config: &ResolvedConfig) -> Self {
+        self.confidence = self.confidence.clamp(0.0, 1.0);
+        self.grouping_confidence = self.grouping_confidence.clamp(0.0, 1.0);
+        self.groups = self
+            .groups
+            .into_iter()
+            .map(|group| normalize_group_message(group, config))
+            .collect();
+        self.single_group = self
+            .single_group
+            .take()
+            .map(|group| normalize_group_message(group, config));
+        if self.single_group.is_none() && !self.groups.is_empty() {
+            self.single_group = Some(normalize_group_message(
+                self.merge_into_single_group(),
+                config,
+            ));
         }
-        grouped.entry(scope).or_default().push(file.clone());
-    }
-    grouped = merge_companion_groups(grouped);
 
-    if grouped.is_empty() {
-        warnings.push("no file-backed commit groups were generated".to_string());
-    }
-
-    let groups = grouped
-        .into_iter()
-        .map(|(scope, files)| {
-            let scope_opt = if scope == "repo" {
-                None
-            } else {
-                Some(scope.clone())
-            };
-            let rationale = format!("grouped by inferred scope `{scope}`");
-            let message = format_message(config, scope_opt.as_deref(), &files, &rationale, intent);
-            CommitGroup {
-                scope: scope_opt,
-                files,
-                rationale,
-                commit_message: message,
+        if !self.should_use_split_plan() {
+            if self.groups.len() > 1 {
+                self.warnings.push(
+                    "grouping confidence below threshold; collapsed to single commit".to_string(),
+                );
+                if let Some(single_group) = self.single_group.clone() {
+                    self.groups = vec![single_group];
+                }
+            } else if self.groups.is_empty() {
+                if let Some(single_group) = self.single_group.clone() {
+                    self.groups = vec![single_group];
+                }
             }
-        })
-        .collect::<Vec<_>>();
+        }
 
-    let mut confidence = if files.is_empty() {
-        0.0
-    } else {
-        0.6 + 0.3 * (exact_matches as f32 / files.len() as f32)
-    };
-    if groups.len() == 1 {
-        confidence += 0.1;
-        if files.len() <= 3 {
-            confidence = confidence.max(0.85);
+        self.auto_executable = !self.groups.is_empty();
+        self
+    }
+
+    fn should_use_split_plan(&self) -> bool {
+        self.grouping_decision == GroupingDecision::Split
+            && self.grouping_confidence >= AUTO_SPLIT_MIN_CONFIDENCE
+            && self.groups.len() > 1
+    }
+
+    fn merge_into_single_group(&self) -> CommitGroup {
+        let mut files = self
+            .groups
+            .iter()
+            .flat_map(|group| group.files.iter().cloned())
+            .collect::<Vec<_>>();
+        files.sort();
+        files.dedup();
+
+        let commit_message = self
+            .groups
+            .first()
+            .map(|group| group.commit_message.clone())
+            .unwrap_or_else(|| "feat: update changes".to_string());
+        CommitGroup {
+            scope: None,
+            files,
+            commit_message,
+            rationale: "collapsed split plan into a single commit".to_string(),
         }
     }
-    confidence = confidence.min(0.98);
-    if groups.len() > 4 {
-        warnings.push("planner created many groups; review before committing".to_string());
-        confidence = confidence.min(0.74);
-    }
+}
 
-    let _ = root_dir;
-    Ok(CommitPlan {
-        auto_executable: confidence >= AUTO_COMMIT_MIN_CONFIDENCE,
-        groups,
-        confidence,
-        warnings,
-    })
+fn normalize_group_message(group: CommitGroup, config: &ResolvedConfig) -> CommitGroup {
+    let summary_hint = extract_summary_hint(&group.commit_message);
+    let commit_message = format_message(
+        config,
+        group.scope.as_deref(),
+        &group.files,
+        &group.rationale,
+        summary_hint.as_deref(),
+    );
+    CommitGroup {
+        commit_message,
+        ..group
+    }
+}
+
+fn extract_summary_hint(message: &str) -> Option<String> {
+    let subject = message.lines().next()?.trim();
+    if subject.is_empty() {
+        return None;
+    }
+    if let Some((_, summary)) = subject.split_once(": ") {
+        return Some(summary.trim().to_string());
+    }
+    if let Some((_, summary)) = subject.split_once(' ') {
+        return Some(summary.trim().to_string());
+    }
+    Some(subject.to_string())
 }
 
 pub fn collect_planning_inputs(
@@ -294,91 +331,6 @@ fn dedupe_scopes(scopes: Vec<CommitScope>) -> Vec<CommitScope> {
     map.into_values().collect()
 }
 
-fn infer_scope(file: &str, scopes: &[CommitScope]) -> (String, bool) {
-    let normalized = file.replace('\\', "/");
-    if is_root_docs_file(&normalized) {
-        return ("docs".to_string(), false);
-    }
-    if is_repo_companion_file(&normalized) {
-        return ("repo".to_string(), false);
-    }
-    let best_match = scopes
-        .iter()
-        .filter_map(|scope| {
-            let matched = scope
-                .paths
-                .iter()
-                .filter(|path| normalized.starts_with(path.as_str()))
-                .max_by_key(|path| path.len())?;
-            Some((scope.name.clone(), matched.len()))
-        })
-        .max_by_key(|(_, len)| *len);
-    if let Some((scope, _)) = best_match {
-        return (scope, true);
-    }
-
-    let path = PathBuf::from(&normalized);
-    let components = path
-        .components()
-        .map(|component| component.as_os_str().to_string_lossy().to_string())
-        .collect::<Vec<_>>();
-    if components.is_empty() {
-        return ("repo".to_string(), false);
-    }
-    if components[0] == "docs" {
-        return ("docs".to_string(), false);
-    }
-    if components[0] == "tests" {
-        return ("tests".to_string(), false);
-    }
-    if components[0] == "src" && components.len() >= 2 {
-        let candidate = components[1].trim_end_matches(".rs").to_string();
-        return (candidate, false);
-    }
-    (components[0].clone(), false)
-}
-
-fn merge_companion_groups(grouped: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
-    let feature_scopes = grouped
-        .iter()
-        .filter_map(|(scope, files)| {
-            if is_feature_scope(scope) && !files.is_empty() {
-                Some(scope.clone())
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-    if feature_scopes.len() != 1 {
-        return grouped;
-    }
-
-    let target_scope = feature_scopes[0].clone();
-    let mut merged = BTreeMap::new();
-    let mut target_files = Vec::new();
-
-    for (scope, files) in grouped {
-        if scope == target_scope {
-            target_files.extend(files);
-            continue;
-        }
-        if scope == "repo" && files.iter().all(|file| is_repo_companion_file(file)) {
-            target_files.extend(files);
-            continue;
-        }
-        if scope == "docs" && files.iter().all(|file| is_root_docs_file(file)) {
-            target_files.extend(files);
-            continue;
-        }
-        merged.insert(scope, files);
-    }
-
-    target_files.sort();
-    target_files.dedup();
-    merged.insert(target_scope, target_files);
-    merged
-}
-
 fn should_ignore_file(file: &str, custom_rules: &[String]) -> bool {
     let normalized = normalize_rule(file);
     if normalized.starts_with(".config/git-raft/") {
@@ -409,49 +361,6 @@ fn normalize_rule(value: &str) -> String {
         .trim_start_matches("./")
         .trim_end_matches('/')
         .replace('\\', "/")
-}
-
-fn is_feature_scope(scope: &str) -> bool {
-    !matches!(scope, "repo" | "docs" | "tests")
-}
-
-fn is_root_docs_file(file: &str) -> bool {
-    if file.contains('/') {
-        return false;
-    }
-    let lower = file.to_ascii_lowercase();
-    lower.ends_with(".md")
-        || lower.ends_with(".txt")
-        || lower == "license"
-        || lower == "license.md"
-        || lower == "license.txt"
-        || lower.starts_with("readme")
-        || lower.starts_with("changelog")
-}
-
-fn is_repo_companion_file(file: &str) -> bool {
-    let normalized = file.replace('\\', "/");
-    if normalized.contains('/') {
-        return matches!(normalized.as_str(), ".github/workflows" | ".github/actions");
-    }
-    matches!(
-        normalized.as_str(),
-        "Cargo.toml"
-            | "Cargo.lock"
-            | "rust-toolchain.toml"
-            | "package.json"
-            | "package-lock.json"
-            | "pnpm-lock.yaml"
-            | "yarn.lock"
-            | "bun.lockb"
-            | "tsconfig.json"
-            | "tsconfig.base.json"
-            | "Makefile"
-            | "Justfile"
-            | "Dockerfile"
-            | ".gitignore"
-            | ".editorconfig"
-    )
 }
 
 fn format_message(
@@ -503,46 +412,15 @@ fn format_full_message(
     config: &ResolvedConfig,
     subject: String,
     files: &[String],
-    rationale: &str,
-    language: &str,
+    _rationale: &str,
+    _language: &str,
 ) -> String {
     let mut message = subject;
-    if config.commit.include_body && !files.is_empty() && config.commit.format != "simple" {
-        message.push_str("\n\n");
-        message.push_str(&build_body(files, rationale, language));
-    }
     if config.commit.include_footer && !files.is_empty() && config.commit.format != "simple" {
         message.push_str("\n\n");
         message.push_str(&build_footer(files));
     }
     message
-}
-
-fn build_body(files: &[String], rationale: &str, language: &str) -> String {
-    let mut body = String::new();
-    match language {
-        "zh" => {
-            body.push_str("涉及文件:\n");
-            for file in files {
-                body.push_str("- ");
-                body.push_str(file);
-                body.push('\n');
-            }
-            body.push_str("\n分组依据:\n- ");
-            body.push_str(rationale);
-        }
-        _ => {
-            body.push_str("Affected files:\n");
-            for file in files {
-                body.push_str("- ");
-                body.push_str(file);
-                body.push('\n');
-            }
-            body.push_str("\nPlanner rationale:\n- ");
-            body.push_str(rationale);
-        }
-    }
-    body
 }
 
 fn build_footer(files: &[String]) -> String {

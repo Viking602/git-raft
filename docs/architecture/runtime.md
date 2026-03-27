@@ -10,6 +10,8 @@
 - AI request flow is task-scoped.
   - `ask` and conflict resolution build a structured AI request first.
   - `commit` also builds a structured AI planning request and expects strict JSON `CommitPlan` output.
+  - `commit` planning includes an AI grouping decision and grouping confidence gate.
+  - If the AI does not clear the split threshold, runtime execution collapses the plan to one commit automatically.
   - The model response is recorded before any patch application happens.
   - File writes and `git add` stay in the host runtime.
 - Hook execution order is fixed: built-in rules plus matching external hooks for `beforeCommand`, `afterCommand`, `commandFailed`, `afterCommitPlan`, `beforeGroupCommit`, `afterGroupCommit`, `beforeAiRequest`, `afterAiResponse`, and `beforePatchApply`.

@@ -18,10 +18,11 @@
 - `commit --language <en|zh>` can override the configured commit language for one run.
 - Commit body generation is configured under `[commit].include_body`.
   - Default is `true`.
-  - Default planner output now includes a subject line plus a generated body.
+  - Current planner output does not auto-generate body content.
+  - This flag only preserves room for future manual or free-form body support.
 - Commit footer generation is configured under `[commit].include_footer`.
   - Default is `false`.
-  - When enabled, planner appends a trailer-style `Files:` footer.
+  - When enabled, planner appends the trailer-style `Files:` footer.
 - `use_gitmoji` can be enabled under `[commit]`.
   - Default is `false`.
   - When it is `true`, commit planner emits gitmoji-style messages even if `format` is not `gitmoji`.
@@ -42,9 +43,12 @@
   - `scopes list`
 - `commit` is planner-driven.
   - `commit --plan` requests the AI planner and prints a non-mutating plan.
+  - `commit --dry-run` requests the AI planner and previews the result without creating commits.
   - `commit --intent <text>` is passed to the AI planner as extra guidance.
   - staged and unstaged changes are planned together by default.
   - `commit` now requires a configured AI provider because grouping and commit messages are AI-generated.
+  - The AI must explicitly decide whether the change should stay as one commit or be split.
+  - Split execution is only accepted when the AI's grouping confidence passes the built-in threshold; otherwise the plan collapses to a single commit automatically.
 - Global flags:
   - `--json`: emit NDJSON event output
   - `--yes`: confirm high-risk operations
