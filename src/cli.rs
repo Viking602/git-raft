@@ -36,6 +36,8 @@ pub enum CommandKind {
         plan: bool,
         #[arg(long)]
         intent: Option<String>,
+        #[arg(long, value_enum)]
+        language: Option<CommitLanguageArg>,
         #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
         args: Vec<String>,
     },
@@ -76,6 +78,10 @@ pub enum CommandKind {
     Ask {
         #[arg(required = true)]
         prompt: Vec<String>,
+    },
+    Init {
+        #[arg(long, default_value_t = false)]
+        project: bool,
     },
     Rollback {
         run_id: String,
@@ -135,6 +141,21 @@ pub enum ConfigWritableScopeArg {
     Repo,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CommitLanguageArg {
+    En,
+    Zh,
+}
+
+impl CommitLanguageArg {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::Zh => "zh",
+        }
+    }
+}
+
 impl CommandKind {
     pub fn label(&self) -> &'static str {
         match self {
@@ -150,6 +171,7 @@ impl CommandKind {
             Self::Stash { .. } => "stash",
             Self::Log { .. } => "log",
             Self::Ask { .. } => "ask",
+            Self::Init { .. } => "init",
             Self::Rollback { .. } => "rollback",
             Self::Runs => "runs",
             Self::Trace { .. } => "trace",
