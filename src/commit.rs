@@ -7,6 +7,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const AUTO_COMMIT_MIN_CONFIDENCE: f32 = 0.8;
+const DEFAULT_IGNORED_TOOL_DIRS: &[&str] = &[
+    ".codex",
+    ".claude",
+    ".cursor",
+    ".windsurf",
+    ".zed",
+    ".vscode",
+    ".idea",
+    ".roo",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CommitPlan {
@@ -24,17 +34,22 @@ pub struct CommitGroup {
     pub rationale: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct CommitPlanningInputs {
+    pub changed_files: Vec<String>,
+    pub staged_files: Vec<String>,
+    pub unstaged_files: Vec<String>,
+    pub untracked_files: Vec<String>,
+}
+
 pub fn build_plan(
     root_dir: &Path,
     snapshot: &GitSnapshot,
     config: &ResolvedConfig,
     intent: Option<&str>,
 ) -> Result<CommitPlan> {
-    let files = snapshot
-        .all_changed_files()
-        .into_iter()
-        .filter(|file| !file.starts_with(".config/git-raft/"))
-        .collect::<Vec<_>>();
+    let planning = collect_planning_inputs(snapshot, config);
+    let files = planning.changed_files;
     let mut grouped: BTreeMap<String, Vec<String>> = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut exact_matches = 0usize;
@@ -46,6 +61,7 @@ pub fn build_plan(
         }
         grouped.entry(scope).or_default().push(file.clone());
     }
+    grouped = merge_companion_groups(grouped);
 
     if grouped.is_empty() {
         warnings.push("no file-backed commit groups were generated".to_string());
@@ -59,11 +75,12 @@ pub fn build_plan(
             } else {
                 Some(scope.clone())
             };
-            let message = format_message(config, scope_opt.as_deref(), &files, intent);
+            let rationale = format!("grouped by inferred scope `{scope}`");
+            let message = format_message(config, scope_opt.as_deref(), &files, &rationale, intent);
             CommitGroup {
                 scope: scope_opt,
                 files,
-                rationale: format!("grouped by inferred scope `{scope}`"),
+                rationale,
                 commit_message: message,
             }
         })
@@ -93,6 +110,37 @@ pub fn build_plan(
         confidence,
         warnings,
     })
+}
+
+pub fn collect_planning_inputs(
+    snapshot: &GitSnapshot,
+    config: &ResolvedConfig,
+) -> CommitPlanningInputs {
+    let mut changed_files = snapshot
+        .all_changed_files()
+        .into_iter()
+        .filter(|file| !should_ignore_file(file, &config.commit.ignore_paths))
+        .collect::<Vec<_>>();
+    changed_files.sort();
+    changed_files.dedup();
+
+    let filter_files = |files: &[String]| {
+        let mut kept = files
+            .iter()
+            .filter(|file| !should_ignore_file(file, &config.commit.ignore_paths))
+            .cloned()
+            .collect::<Vec<_>>();
+        kept.sort();
+        kept.dedup();
+        kept
+    };
+
+    CommitPlanningInputs {
+        changed_files,
+        staged_files: filter_files(&snapshot.staged_files),
+        unstaged_files: filter_files(&snapshot.unstaged_files),
+        untracked_files: filter_files(&snapshot.untracked_files),
+    }
 }
 
 pub fn generate_scopes(
@@ -248,6 +296,12 @@ fn dedupe_scopes(scopes: Vec<CommitScope>) -> Vec<CommitScope> {
 
 fn infer_scope(file: &str, scopes: &[CommitScope]) -> (String, bool) {
     let normalized = file.replace('\\', "/");
+    if is_root_docs_file(&normalized) {
+        return ("docs".to_string(), false);
+    }
+    if is_repo_companion_file(&normalized) {
+        return ("repo".to_string(), false);
+    }
     let best_match = scopes
         .iter()
         .filter_map(|scope| {
@@ -284,43 +338,236 @@ fn infer_scope(file: &str, scopes: &[CommitScope]) -> (String, bool) {
     (components[0].clone(), false)
 }
 
+fn merge_companion_groups(grouped: BTreeMap<String, Vec<String>>) -> BTreeMap<String, Vec<String>> {
+    let feature_scopes = grouped
+        .iter()
+        .filter_map(|(scope, files)| {
+            if is_feature_scope(scope) && !files.is_empty() {
+                Some(scope.clone())
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if feature_scopes.len() != 1 {
+        return grouped;
+    }
+
+    let target_scope = feature_scopes[0].clone();
+    let mut merged = BTreeMap::new();
+    let mut target_files = Vec::new();
+
+    for (scope, files) in grouped {
+        if scope == target_scope {
+            target_files.extend(files);
+            continue;
+        }
+        if scope == "repo" && files.iter().all(|file| is_repo_companion_file(file)) {
+            target_files.extend(files);
+            continue;
+        }
+        if scope == "docs" && files.iter().all(|file| is_root_docs_file(file)) {
+            target_files.extend(files);
+            continue;
+        }
+        merged.insert(scope, files);
+    }
+
+    target_files.sort();
+    target_files.dedup();
+    merged.insert(target_scope, target_files);
+    merged
+}
+
+fn should_ignore_file(file: &str, custom_rules: &[String]) -> bool {
+    let normalized = normalize_rule(file);
+    if normalized.starts_with(".config/git-raft/") {
+        return true;
+    }
+    if DEFAULT_IGNORED_TOOL_DIRS
+        .iter()
+        .any(|rule| matches_ignore_rule(&normalized, rule))
+    {
+        return true;
+    }
+    custom_rules
+        .iter()
+        .any(|rule| matches_ignore_rule(&normalized, rule))
+}
+
+fn matches_ignore_rule(path: &str, rule: &str) -> bool {
+    let normalized_rule = normalize_rule(rule);
+    if normalized_rule.is_empty() {
+        return false;
+    }
+    path == normalized_rule || path.starts_with(&format!("{normalized_rule}/"))
+}
+
+fn normalize_rule(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches("./")
+        .trim_end_matches('/')
+        .replace('\\', "/")
+}
+
+fn is_feature_scope(scope: &str) -> bool {
+    !matches!(scope, "repo" | "docs" | "tests")
+}
+
+fn is_root_docs_file(file: &str) -> bool {
+    if file.contains('/') {
+        return false;
+    }
+    let lower = file.to_ascii_lowercase();
+    lower.ends_with(".md")
+        || lower.ends_with(".txt")
+        || lower == "license"
+        || lower == "license.md"
+        || lower == "license.txt"
+        || lower.starts_with("readme")
+        || lower.starts_with("changelog")
+}
+
+fn is_repo_companion_file(file: &str) -> bool {
+    let normalized = file.replace('\\', "/");
+    if normalized.contains('/') {
+        return matches!(normalized.as_str(), ".github/workflows" | ".github/actions");
+    }
+    matches!(
+        normalized.as_str(),
+        "Cargo.toml"
+            | "Cargo.lock"
+            | "rust-toolchain.toml"
+            | "package.json"
+            | "package-lock.json"
+            | "pnpm-lock.yaml"
+            | "yarn.lock"
+            | "bun.lockb"
+            | "tsconfig.json"
+            | "tsconfig.base.json"
+            | "Makefile"
+            | "Justfile"
+            | "Dockerfile"
+            | ".gitignore"
+            | ".editorconfig"
+    )
+}
+
 fn format_message(
     config: &ResolvedConfig,
     scope: Option<&str>,
     files: &[String],
+    rationale: &str,
     intent: Option<&str>,
 ) -> String {
+    let language = normalized_commit_language(&config.commit.language);
     let summary = intent
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(|value| value.to_string())
-        .unwrap_or_else(|| default_summary(scope, files));
+        .unwrap_or_else(|| default_summary(scope, files, language));
     let commit_type = infer_commit_type(intent, files);
+    let use_gitmoji = config.commit.use_gitmoji || config.commit.format == "gitmoji";
+    if use_gitmoji {
+        return format_full_message(
+            config,
+            format!("{} {}", emoji_for_type(&commit_type), summary),
+            files,
+            rationale,
+            language,
+        );
+    }
     match config.commit.format.as_str() {
         "simple" => capitalize_first(&summary),
-        "gitmoji" => format!("{} {}", emoji_for_type(&commit_type), summary),
         "angular" | "conventional" => {
-            if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
+            let subject = if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
                 format!("{commit_type}({scope}): {summary}")
             } else {
                 format!("{commit_type}: {summary}")
-            }
+            };
+            format_full_message(config, subject, files, rationale, language)
         }
         _ => {
-            if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
+            let subject = if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
                 format!("{commit_type}({scope}): {summary}")
             } else {
                 format!("{commit_type}: {summary}")
-            }
+            };
+            format_full_message(config, subject, files, rationale, language)
         }
     }
 }
 
-fn default_summary(scope: Option<&str>, files: &[String]) -> String {
-    match scope {
-        Some(scope) => format!("update {scope} changes"),
-        None if !files.is_empty() => format!("update {}", files[0]),
-        None => "update changes".to_string(),
+fn format_full_message(
+    config: &ResolvedConfig,
+    subject: String,
+    files: &[String],
+    rationale: &str,
+    language: &str,
+) -> String {
+    let mut message = subject;
+    if config.commit.include_body && !files.is_empty() && config.commit.format != "simple" {
+        message.push_str("\n\n");
+        message.push_str(&build_body(files, rationale, language));
+    }
+    if config.commit.include_footer && !files.is_empty() && config.commit.format != "simple" {
+        message.push_str("\n\n");
+        message.push_str(&build_footer(files));
+    }
+    message
+}
+
+fn build_body(files: &[String], rationale: &str, language: &str) -> String {
+    let mut body = String::new();
+    match language {
+        "zh" => {
+            body.push_str("涉及文件:\n");
+            for file in files {
+                body.push_str("- ");
+                body.push_str(file);
+                body.push('\n');
+            }
+            body.push_str("\n分组依据:\n- ");
+            body.push_str(rationale);
+        }
+        _ => {
+            body.push_str("Affected files:\n");
+            for file in files {
+                body.push_str("- ");
+                body.push_str(file);
+                body.push('\n');
+            }
+            body.push_str("\nPlanner rationale:\n- ");
+            body.push_str(rationale);
+        }
+    }
+    body
+}
+
+fn build_footer(files: &[String]) -> String {
+    format!("Files: {}", files.join(", "))
+}
+
+fn default_summary(scope: Option<&str>, files: &[String], language: &str) -> String {
+    match language {
+        "zh" => match scope {
+            Some(scope) => format!("更新 {scope} 相关改动"),
+            None if !files.is_empty() => format!("更新 {}", files[0]),
+            None => "更新改动".to_string(),
+        },
+        _ => match scope {
+            Some(scope) => format!("update {scope} changes"),
+            None if !files.is_empty() => format!("update {}", files[0]),
+            None => "update changes".to_string(),
+        },
+    }
+}
+
+fn normalized_commit_language(language: &str) -> &str {
+    match language.trim().to_ascii_lowercase().as_str() {
+        "zh" | "zh-cn" | "zh-hans" | "chinese" | "中文" => "zh",
+        _ => "en",
     }
 }
 
