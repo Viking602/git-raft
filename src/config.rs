@@ -20,6 +20,7 @@ pub struct RepoConfig {
 pub struct ProviderConfig {
     pub base_url: String,
     pub model: String,
+    pub api_key: String,
     pub api_key_env: String,
 }
 
@@ -27,7 +28,12 @@ pub struct ProviderConfig {
 #[serde(default)]
 pub struct CommitConfig {
     pub format: String,
+    pub use_gitmoji: bool,
+    pub language: String,
+    pub include_body: bool,
+    pub include_footer: bool,
     pub examples_file: String,
+    pub ignore_paths: Vec<String>,
     pub scopes: Vec<CommitScope>,
 }
 
@@ -112,8 +118,13 @@ impl ConfigScope {
 pub enum ConfigKey {
     ProviderBaseUrl,
     ProviderModel,
+    ProviderApiKey,
     ProviderApiKeyEnv,
     CommitFormat,
+    CommitUseGitmoji,
+    CommitLanguage,
+    CommitIncludeBody,
+    CommitIncludeFooter,
     CommitExamplesFile,
     HooksValidateMessageFormat,
     HooksScopeRequired,
@@ -127,6 +138,7 @@ impl Default for ProviderConfig {
         Self {
             base_url: String::new(),
             model: "gpt-4.1-mini".to_string(),
+            api_key: String::new(),
             api_key_env: "GIT_RAFT_API_KEY".to_string(),
         }
     }
@@ -136,7 +148,12 @@ impl Default for CommitConfig {
     fn default() -> Self {
         Self {
             format: "conventional".to_string(),
+            use_gitmoji: false,
+            language: "en".to_string(),
+            include_body: true,
+            include_footer: false,
             examples_file: ".config/git-raft/commit_examples.md".to_string(),
+            ignore_paths: Vec::new(),
             scopes: Vec::new(),
         }
     }
@@ -171,6 +188,29 @@ pub async fn ensure_repo_config(repo: &RepoContext) -> Result<()> {
     }
 
     let examples_path = commit_examples_path(&repo.root_dir);
+    if !fs::try_exists(&examples_path).await? {
+        if let Some(parent) = examples_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&examples_path, default_commit_examples()).await?;
+    }
+    Ok(())
+}
+
+pub async fn ensure_user_config() -> Result<()> {
+    let dir = user_config_dir()?;
+    fs::create_dir_all(&dir).await?;
+
+    let config_path = user_config_file()?;
+    if !fs::try_exists(&config_path).await? {
+        fs::write(
+            &config_path,
+            default_user_config_toml(&user_commit_examples_path()?),
+        )
+        .await?;
+    }
+
+    let examples_path = user_commit_examples_path()?;
     if !fs::try_exists(&examples_path).await? {
         if let Some(parent) = examples_path.parent() {
             fs::create_dir_all(parent).await?;
@@ -308,17 +348,22 @@ pub fn repo_config_file(root_dir: &Path) -> PathBuf {
 }
 
 pub fn user_config_file() -> Result<PathBuf> {
+    Ok(user_config_dir()?.join("config.toml"))
+}
+
+pub fn user_config_dir() -> Result<PathBuf> {
     let home = env::var("HOME")
         .or_else(|_| env::var("USERPROFILE"))
         .context("missing HOME/USERPROFILE for user config path")?;
-    Ok(PathBuf::from(home)
-        .join(".config")
-        .join("git-raft")
-        .join("config.toml"))
+    Ok(PathBuf::from(home).join(".config").join("git-raft"))
 }
 
 pub fn commit_examples_path(root_dir: &Path) -> PathBuf {
     repo_config_dir(root_dir).join("commit_examples.md")
+}
+
+pub fn user_commit_examples_path() -> Result<PathBuf> {
+    Ok(user_config_dir()?.join("commit_examples.md"))
 }
 
 impl ConfigKey {
@@ -327,10 +372,19 @@ impl ConfigKey {
         match normalized.as_str() {
             "provider.base_url" | "provider_base_url" => Some(Self::ProviderBaseUrl),
             "provider.model" | "provider_model" => Some(Self::ProviderModel),
-            "provider.api_key_env" | "provider_api_key_env" | "provider.api_key" => {
-                Some(Self::ProviderApiKeyEnv)
-            }
+            "provider.api_key" | "provider_api_key" => Some(Self::ProviderApiKey),
+            "provider.api_key_env" | "provider_api_key_env" => Some(Self::ProviderApiKeyEnv),
             "commit.format" | "commit_format" => Some(Self::CommitFormat),
+            "commit.use_gitmoji" | "commit_use_gitmoji" | "use_gitmoji" => {
+                Some(Self::CommitUseGitmoji)
+            }
+            "commit.language" | "commit_language" | "language" => Some(Self::CommitLanguage),
+            "commit.include_body" | "commit_include_body" | "include_body" => {
+                Some(Self::CommitIncludeBody)
+            }
+            "commit.include_footer" | "commit_include_footer" | "include_footer" => {
+                Some(Self::CommitIncludeFooter)
+            }
             "commit.examples_file" | "commit_examples_file" => Some(Self::CommitExamplesFile),
             "hooks.rules.validate_message_format"
             | "hooks_rules_validate_message_format"
@@ -353,8 +407,13 @@ impl ConfigKey {
         match self {
             Self::ProviderBaseUrl => "provider.base_url",
             Self::ProviderModel => "provider.model",
+            Self::ProviderApiKey => "provider.api_key",
             Self::ProviderApiKeyEnv => "provider.api_key_env",
             Self::CommitFormat => "commit.format",
+            Self::CommitUseGitmoji => "commit.use_gitmoji",
+            Self::CommitLanguage => "commit.language",
+            Self::CommitIncludeBody => "commit.include_body",
+            Self::CommitIncludeFooter => "commit.include_footer",
             Self::CommitExamplesFile => "commit.examples_file",
             Self::HooksValidateMessageFormat => "hooks.rules.validate_message_format",
             Self::HooksScopeRequired => "hooks.rules.scope_required",
@@ -368,8 +427,13 @@ impl ConfigKey {
         match self {
             Self::ProviderBaseUrl => config.provider.base_url.clone(),
             Self::ProviderModel => config.provider.model.clone(),
+            Self::ProviderApiKey => config.provider.api_key.clone(),
             Self::ProviderApiKeyEnv => config.provider.api_key_env.clone(),
             Self::CommitFormat => config.commit.format.clone(),
+            Self::CommitUseGitmoji => config.commit.use_gitmoji.to_string(),
+            Self::CommitLanguage => config.commit.language.clone(),
+            Self::CommitIncludeBody => config.commit.include_body.to_string(),
+            Self::CommitIncludeFooter => config.commit.include_footer.to_string(),
             Self::CommitExamplesFile => config.commit.examples_file.clone(),
             Self::HooksValidateMessageFormat => {
                 config.hooks.rules.validate_message_format.to_string()
@@ -385,8 +449,13 @@ impl ConfigKey {
         match self {
             Self::ProviderBaseUrl => config.provider.base_url = value.to_string(),
             Self::ProviderModel => config.provider.model = value.to_string(),
+            Self::ProviderApiKey => config.provider.api_key = value.to_string(),
             Self::ProviderApiKeyEnv => config.provider.api_key_env = value.to_string(),
             Self::CommitFormat => config.commit.format = value.to_string(),
+            Self::CommitUseGitmoji => config.commit.use_gitmoji = parse_bool(value)?,
+            Self::CommitLanguage => config.commit.language = normalize_commit_language(value)?,
+            Self::CommitIncludeBody => config.commit.include_body = parse_bool(value)?,
+            Self::CommitIncludeFooter => config.commit.include_footer = parse_bool(value)?,
             Self::CommitExamplesFile => config.commit.examples_file = value.to_string(),
             Self::HooksValidateMessageFormat => {
                 config.hooks.rules.validate_message_format = parse_bool(value)?
@@ -408,6 +477,14 @@ fn parse_bool(value: &str) -> Result<bool> {
     value
         .parse::<bool>()
         .with_context(|| format!("invalid bool value: {value}"))
+}
+
+fn normalize_commit_language(value: &str) -> Result<String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "en" | "english" => Ok("en".to_string()),
+        "zh" | "zh-cn" | "zh-hans" | "chinese" | "中文" => Ok("zh".to_string()),
+        other => Err(anyhow!("unsupported commit language: {other}")),
+    }
 }
 
 fn load_config_file(path: &Path) -> Result<RepoConfig> {
@@ -432,6 +509,10 @@ fn merge_config(
         resolved.provider.model = incoming.provider.model.clone();
         sources.insert("provider.model".to_string(), source.to_string());
     }
+    if !incoming.provider.api_key.is_empty() {
+        resolved.provider.api_key = incoming.provider.api_key.clone();
+        sources.insert("provider.api_key".to_string(), source.to_string());
+    }
     if !incoming.provider.api_key_env.is_empty() {
         resolved.provider.api_key_env = incoming.provider.api_key_env.clone();
         sources.insert("provider.api_key_env".to_string(), source.to_string());
@@ -441,9 +522,25 @@ fn merge_config(
         resolved.commit.format = incoming.commit.format.clone();
         sources.insert("commit.format".to_string(), source.to_string());
     }
+    if incoming.commit.use_gitmoji {
+        resolved.commit.use_gitmoji = true;
+        sources.insert("commit.use_gitmoji".to_string(), source.to_string());
+    }
+    if !incoming.commit.language.is_empty() {
+        resolved.commit.language = incoming.commit.language.clone();
+        sources.insert("commit.language".to_string(), source.to_string());
+    }
+    resolved.commit.include_body = incoming.commit.include_body;
+    sources.insert("commit.include_body".to_string(), source.to_string());
+    resolved.commit.include_footer = incoming.commit.include_footer;
+    sources.insert("commit.include_footer".to_string(), source.to_string());
     if !incoming.commit.examples_file.is_empty() {
         resolved.commit.examples_file = incoming.commit.examples_file.clone();
         sources.insert("commit.examples_file".to_string(), source.to_string());
+    }
+    if !incoming.commit.ignore_paths.is_empty() {
+        resolved.commit.ignore_paths = incoming.commit.ignore_paths.clone();
+        sources.insert("commit.ignore_paths".to_string(), source.to_string());
     }
     if !incoming.commit.scopes.is_empty() {
         resolved.commit.scopes = incoming.commit.scopes.clone();
@@ -480,9 +577,15 @@ fn default_source_map() -> ConfigSourceMap {
     [
         "provider.base_url",
         "provider.model",
+        "provider.api_key",
         "provider.api_key_env",
         "commit.format",
+        "commit.use_gitmoji",
+        "commit.language",
+        "commit.include_body",
+        "commit.include_footer",
         "commit.examples_file",
+        "commit.ignore_paths",
         "commit.scopes",
         "hooks.rules.validate_message_format",
         "hooks.rules.scope_required",
@@ -514,11 +617,17 @@ fn default_repo_config_toml() -> &'static str {
 [provider]
 base_url = ""
 model = "gpt-4.1-mini"
+api_key = ""
 api_key_env = "GIT_RAFT_API_KEY"
 
 [commit]
 format = "conventional"
+use_gitmoji = false
+language = "en"
+include_body = true
+include_footer = false
 examples_file = ".config/git-raft/commit_examples.md"
+ignore_paths = []
 
 [hooks.rules]
 validate_message_format = true
@@ -529,6 +638,43 @@ max_group_count = 8
 [runs]
 dir = ".git/git-raft/runs"
 "#
+}
+
+fn default_user_config_toml(examples_path: &Path) -> String {
+    format!(
+        r#"# git-raft user config
+# Choose one commit format preset:
+# - conventional: feat(scope): add feature
+# - angular: type(scope): summary
+# - gitmoji: :sparkles: add feature
+# - simple: Add feature
+
+[provider]
+base_url = ""
+model = "gpt-4.1-mini"
+api_key = ""
+api_key_env = "GIT_RAFT_API_KEY"
+
+[commit]
+format = "conventional"
+use_gitmoji = false
+language = "en"
+include_body = true
+include_footer = false
+examples_file = "{}"
+ignore_paths = []
+
+[hooks.rules]
+validate_message_format = true
+scope_required = false
+empty_group = true
+max_group_count = 8
+
+[runs]
+dir = ".git/git-raft/runs"
+"#,
+        examples_path.display()
+    )
 }
 
 fn default_commit_examples() -> &'static str {
