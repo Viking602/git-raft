@@ -30,3 +30,20 @@ fn docs_scaffold_exists() {
         assert!(Path::new(path).exists(), "missing {path}");
     }
 }
+
+#[test]
+fn makefile_exists_with_local_dev_targets() {
+    let content = fs::read_to_string("Makefile").expect("read Makefile");
+    for target in [
+        "help:",
+        "build:",
+        "test:",
+        "cli-test:",
+        "guardrails:",
+        "fmt:",
+        "fmt-check:",
+        "install:",
+    ] {
+        assert!(content.contains(target), "missing target {target}");
+    }
+}
