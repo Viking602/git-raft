@@ -3,6 +3,7 @@ use crate::config::{ExternalHookConfig, ResolvedConfig};
 use crate::git::{GitSnapshot, RepoContext};
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +28,14 @@ pub struct HookPayload {
     pub commit_group: Option<CommitGroup>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_message: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_task: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_request_summary: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_response_summary: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch_confidence: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -69,6 +78,10 @@ pub struct HookContext<'a> {
     pub commit_plan: Option<&'a CommitPlan>,
     pub commit_group: Option<&'a CommitGroup>,
     pub commit_message: Option<&'a str>,
+    pub agent_task: Option<&'a str>,
+    pub agent_request_summary: Option<&'a Value>,
+    pub agent_response_summary: Option<&'a Value>,
+    pub patch_confidence: Option<f32>,
 }
 
 impl HookDecision {
@@ -189,6 +202,10 @@ async fn run_external_hook(
         commit_plan: context.commit_plan.cloned(),
         commit_group: context.commit_group.cloned(),
         commit_message: context.commit_message.map(str::to_string),
+        agent_task: context.agent_task.map(str::to_string),
+        agent_request_summary: context.agent_request_summary.cloned(),
+        agent_response_summary: context.agent_response_summary.cloned(),
+        patch_confidence: context.patch_confidence,
     };
 
     let mut command = Command::new(&hook.program);
