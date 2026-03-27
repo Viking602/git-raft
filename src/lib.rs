@@ -8,11 +8,14 @@ mod hooks;
 mod risk;
 mod store;
 
-use ai::{AiClient, AiPatch};
+use ai::{AiClient, AiPatch, collect_repo_context};
 use anyhow::{Context, Result, anyhow};
 use clap::Parser;
-use cli::{Cli, CommandKind, ConfigCommand, ConfigScopeArg, ConfigWritableScopeArg, ScopesCommand};
-use commit::{build_plan, generate_scopes, list_scopes};
+use cli::{
+    Cli, CommandKind, CommitLanguageArg, ConfigCommand, ConfigScopeArg, ConfigWritableScopeArg,
+    ScopesCommand,
+};
+use commit::{build_plan, collect_planning_inputs, generate_scopes, list_scopes};
 use config::{ConfigKey, ConfigScope};
 use events::Emitter;
 use git::GitExec;
@@ -34,6 +37,7 @@ struct MergeRun {
 struct CommitRun {
     plan_only: bool,
     intent: Option<String>,
+    language: Option<String>,
     args: Vec<String>,
     resolved_config: config::ResolvedConfig,
 }
@@ -47,9 +51,6 @@ pub async fn run() -> Result<()> {
 async fn dispatch(cli: Cli, cwd: PathBuf) -> Result<()> {
     let run_id = Uuid::new_v4();
     let repo = GitExec::discover_repo(&cwd).await?;
-    if let Some(repo_ctx) = &repo {
-        config::ensure_repo_config(repo_ctx).await?;
-    }
     let resolved_config = config::resolve_config(repo.as_ref().map(|repo| repo.root_dir.as_path()))
         .map(|(config, _)| config)
         .unwrap_or_default();
@@ -168,6 +169,10 @@ async fn dispatch_command(
             commit_plan: None,
             commit_group: None,
             commit_message: None,
+            agent_task: None,
+            agent_request_summary: None,
+            agent_response_summary: None,
+            patch_confidence: None,
         })
         .await?;
         if hook.blocked {
@@ -221,11 +226,17 @@ async fn dispatch_command(
             )
             .await
         }
-        CommandKind::Commit { plan, intent, args } => {
+        CommandKind::Commit {
+            plan,
+            intent,
+            language,
+            args,
+        } => {
             run_commit(
                 CommitRun {
                     plan_only: plan,
                     intent,
+                    language: language.map(CommitLanguageArg::as_str).map(str::to_string),
                     args,
                     resolved_config: resolved_config.clone(),
                 },
@@ -292,6 +303,7 @@ async fn dispatch_command(
                     args,
                     apply_ai,
                 },
+                resolved_config.clone(),
                 cwd.clone(),
                 repo.clone(),
                 store.clone(),
@@ -311,6 +323,7 @@ async fn dispatch_command(
                     args,
                     apply_ai,
                 },
+                resolved_config.clone(),
                 cwd.clone(),
                 repo.clone(),
                 store.clone(),
@@ -322,8 +335,17 @@ async fn dispatch_command(
             run_sync(merge, cwd.clone(), repo.clone(), store.clone(), emitter).await
         }
         CommandKind::Ask { prompt } => {
-            run_ask(prompt.join(" "), repo.as_ref(), store.clone(), emitter).await
+            run_ask(
+                prompt.join(" "),
+                cwd.clone(),
+                repo.as_ref(),
+                resolved_config.clone(),
+                store.clone(),
+                emitter,
+            )
+            .await
         }
+        CommandKind::Init { project } => run_init(repo.as_ref(), project, emitter).await,
         CommandKind::Rollback { run_id } => {
             run_rollback(run_id, cwd.clone(), repo.clone(), store.clone(), emitter).await
         }
@@ -356,6 +378,10 @@ async fn dispatch_command(
             commit_plan: None,
             commit_group: None,
             commit_message: None,
+            agent_task: None,
+            agent_request_summary: None,
+            agent_response_summary: None,
+            patch_confidence: None,
         })
         .await;
     }
@@ -408,6 +434,7 @@ async fn run_git_passthrough(
 
 async fn run_merge_like(
     request: MergeRun,
+    resolved_config: config::ResolvedConfig,
     cwd: PathBuf,
     repo: Option<git::RepoContext>,
     store: Option<RunStore>,
@@ -422,7 +449,7 @@ async fn run_merge_like(
     let repo_ctx = repo
         .clone()
         .ok_or_else(|| anyhow!("{mode} requires a git repository"))?;
-    let git = GitExec::new(cwd, Some(repo_ctx));
+    let git = GitExec::new(cwd.clone(), Some(repo_ctx));
     if let Some(store) = &store {
         let backup_ref = git.create_backup_ref(store.run_id()).await?;
         store.set_backup_ref(Some(backup_ref))?;
@@ -469,9 +496,28 @@ async fn run_merge_like(
         .await?;
 
     if apply_ai {
-        let patch =
-            attempt_ai_resolution(&git, repo.as_ref(), &conflicts, store.as_ref(), emitter).await?;
-        maybe_apply_patch(&git, patch, store, emitter).await?;
+        let patch = attempt_ai_resolution(
+            &git,
+            &mode,
+            &cwd,
+            repo.as_ref(),
+            &resolved_config,
+            &conflicts,
+            store.as_ref(),
+            emitter,
+        )
+        .await?;
+        maybe_apply_patch(
+            &git,
+            &mode,
+            &cwd,
+            repo.as_ref(),
+            &resolved_config,
+            patch,
+            store,
+            emitter,
+        )
+        .await?;
     }
     Err(anyhow!("{mode} stopped on conflicts"))
 }
@@ -630,6 +676,42 @@ async fn run_config(
     }
 }
 
+async fn run_init(
+    repo: Option<&git::RepoContext>,
+    project: bool,
+    emitter: &mut Emitter,
+) -> Result<()> {
+    let (scope_name, config_path, examples_path) = if project {
+        let repo_ctx = repo.ok_or_else(|| anyhow!("repo init requires a git repository"))?;
+        config::ensure_repo_config(repo_ctx).await?;
+        (
+            "repo",
+            config::repo_config_file(&repo_ctx.root_dir),
+            config::commit_examples_path(&repo_ctx.root_dir),
+        )
+    } else {
+        config::ensure_user_config().await?;
+        (
+            "user",
+            config::user_config_file()?,
+            config::user_commit_examples_path()?,
+        )
+    };
+    emitter
+        .emit(
+            "tool_result",
+            Some("done"),
+            Some("init".to_string()),
+            Some(json!({
+                "scope": scope_name,
+                "config_path": config_path.display().to_string(),
+                "commit_examples_path": examples_path.display().to_string(),
+            })),
+        )
+        .await?;
+    Ok(())
+}
+
 async fn run_scopes(
     command: ScopesCommand,
     cwd: PathBuf,
@@ -641,6 +723,7 @@ async fn run_scopes(
     let git = GitExec::new(cwd, Some(repo_ctx.clone()));
     match command {
         ScopesCommand::Generate => {
+            tokio::fs::create_dir_all(config::repo_config_dir(&repo_ctx.root_dir)).await?;
             let existing = config::load_repo_config(&repo_ctx.root_dir)
                 .map(|cfg| cfg.commit.scopes)
                 .unwrap_or_default();
@@ -685,18 +768,72 @@ async fn run_commit(
     let CommitRun {
         plan_only,
         intent,
+        language,
         args: _args,
-        resolved_config,
+        mut resolved_config,
     } = request;
+    if let Some(language) = language {
+        resolved_config.commit.language = language;
+    }
     let repo_ctx = repo.ok_or_else(|| anyhow!("commit requires a git repository"))?;
     let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
     let snapshot = git.inspect_snapshot().await?;
-    let plan = build_plan(
+    let local_hint_plan = build_plan(
         &repo_ctx.root_dir,
         &snapshot,
         &resolved_config,
         intent.as_deref(),
     )?;
+    let planning_inputs = collect_planning_inputs(&snapshot, &resolved_config);
+    let client = AiClient::from_repo(Some(&repo_ctx))?;
+    let mut ai_context_config = client.config().clone();
+    ai_context_config.commit_format = resolved_config.commit.format.clone();
+    ai_context_config.commit_language = resolved_config.commit.language.clone();
+    ai_context_config.commit_use_gitmoji = resolved_config.commit.use_gitmoji;
+    ai_context_config.commit_include_body = resolved_config.commit.include_body;
+    ai_context_config.commit_include_footer = resolved_config.commit.include_footer;
+    ai_context_config.commit_ignore_paths = resolved_config.commit.ignore_paths.clone();
+    let repo_context = Some(collect_repo_context(&git, &repo_ctx, &ai_context_config).await);
+    let request = client.build_commit_request(
+        planning_inputs,
+        intent.clone(),
+        local_hint_plan,
+        &resolved_config.commit,
+        repo_context,
+    );
+    let request_summary = request.summary();
+    run_ai_hook(
+        "beforeAiRequest",
+        "commit",
+        &cwd,
+        &repo_ctx,
+        &resolved_config,
+        &snapshot,
+        Some(request.task_name()),
+        Some(&request_summary),
+        None,
+        None,
+        emitter,
+    )
+    .await?;
+
+    let exchange = client.execute(request, emitter, store.as_ref()).await?;
+    let response_summary = exchange.response_summary();
+    run_ai_hook(
+        "afterAiResponse",
+        "commit",
+        &cwd,
+        &repo_ctx,
+        &resolved_config,
+        &snapshot,
+        Some(exchange.task_name()),
+        Some(&request_summary),
+        Some(&response_summary),
+        exchange.patch_confidence(),
+        emitter,
+    )
+    .await?;
+    let plan = exchange.into_commit_plan()?;
 
     let hook = run_hooks(HookContext {
         event: "afterCommitPlan",
@@ -709,6 +846,10 @@ async fn run_commit(
         commit_plan: Some(&plan),
         commit_group: None,
         commit_message: None,
+        agent_task: None,
+        agent_request_summary: None,
+        agent_response_summary: None,
+        patch_confidence: None,
     })
     .await?;
 
@@ -744,11 +885,6 @@ async fn run_commit(
     if plan_only {
         return Ok(());
     }
-    if !plan.auto_executable {
-        return Err(anyhow!(
-            "planner confidence below auto-commit threshold; use --plan to inspect"
-        ));
-    }
 
     for group in &plan.groups {
         let group_hook = run_hooks(HookContext {
@@ -762,6 +898,10 @@ async fn run_commit(
             commit_plan: Some(&plan),
             commit_group: Some(group),
             commit_message: Some(&group.commit_message),
+            agent_task: None,
+            agent_request_summary: None,
+            agent_response_summary: None,
+            patch_confidence: None,
         })
         .await?;
         if group_hook.blocked {
@@ -798,6 +938,10 @@ async fn run_commit(
             commit_plan: Some(&plan),
             commit_group: Some(group),
             commit_message: Some(&message),
+            agent_task: None,
+            agent_request_summary: None,
+            agent_response_summary: None,
+            patch_confidence: None,
         })
         .await;
     }
@@ -825,7 +969,9 @@ fn map_config_writable_scope(scope: ConfigWritableScopeArg) -> ConfigScope {
 
 async fn run_ask(
     prompt: String,
+    cwd: PathBuf,
     repo: Option<&git::RepoContext>,
+    resolved_config: config::ResolvedConfig,
     store: Option<RunStore>,
     emitter: &mut Emitter,
 ) -> Result<()> {
@@ -833,15 +979,55 @@ async fn run_ask(
         return Err(anyhow!("ask requires a prompt"));
     }
     let client = AiClient::from_repo(repo)?;
-    emitter
-        .emit(
-            "phase_changed",
-            Some("ai_wait"),
-            Some("sending ask prompt".to_string()),
+    let repo_context = if let Some(repo_ctx) = repo {
+        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
+        Some(collect_repo_context(&git, repo_ctx, client.config()).await)
+    } else {
+        None
+    };
+    let request = client.build_ask_request(prompt, repo_context);
+    if let Some(repo_ctx) = repo {
+        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
+        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
+        let request_summary = request.summary();
+        run_ai_hook(
+            "beforeAiRequest",
+            "ask",
+            &cwd,
+            repo_ctx,
+            &resolved_config,
+            &snapshot,
+            Some(request.task_name()),
+            Some(&request_summary),
             None,
+            None,
+            emitter,
         )
         .await?;
-    let reply = client.ask(&prompt, emitter, store.as_ref()).await?;
+    }
+
+    let exchange = client.execute(request, emitter, store.as_ref()).await?;
+    if let Some(repo_ctx) = repo {
+        let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
+        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
+        let request_summary = exchange.request_summary();
+        let response_summary = exchange.response_summary();
+        run_ai_hook(
+            "afterAiResponse",
+            "ask",
+            &cwd,
+            repo_ctx,
+            &resolved_config,
+            &snapshot,
+            Some(exchange.task_name()),
+            Some(&request_summary),
+            Some(&response_summary),
+            exchange.patch_confidence(),
+            emitter,
+        )
+        .await?;
+    }
+    let reply = exchange.into_text()?;
     emitter
         .emit(
             "verify_finished",
@@ -986,9 +1172,10 @@ async fn run_doctor(
 ) -> Result<()> {
     let git_available = GitExec::git_available().await;
     let provider = AiClient::config_from_repo(repo.as_ref()).ok();
-    let provider_configured = provider
-        .as_ref()
-        .is_some_and(|cfg| !cfg.base_url.trim().is_empty() && env::var(&cfg.api_key_env).is_ok());
+    let provider_configured = provider.as_ref().is_some_and(|cfg| {
+        !cfg.base_url.trim().is_empty()
+            && (!cfg.api_key.trim().is_empty() || env::var(&cfg.api_key_env).is_ok())
+    });
     let report = json!({
         "cwd": cwd.display().to_string(),
         "git_available": git_available,
@@ -997,6 +1184,7 @@ async fn run_doctor(
         "event_stream": true,
         "provider_model": provider.as_ref().map(|cfg| cfg.model.clone()),
         "commit_format": provider.as_ref().map(|cfg| cfg.commit_format.clone()),
+        "commit_language": provider.as_ref().map(|cfg| cfg.commit_language.clone()),
         "commit_examples_file": provider.as_ref().map(|cfg| cfg.commit_examples_file.clone()),
     });
     emitter
@@ -1035,9 +1223,59 @@ async fn run_external(
     run_git_passthrough(&args[0], args[1..].to_vec(), cwd, repo, store, emitter).await
 }
 
+async fn run_ai_hook(
+    event: &str,
+    command: &str,
+    cwd: &PathBuf,
+    repo: &git::RepoContext,
+    resolved_config: &config::ResolvedConfig,
+    git_snapshot: &git::GitSnapshot,
+    agent_task: Option<&str>,
+    agent_request_summary: Option<&serde_json::Value>,
+    agent_response_summary: Option<&serde_json::Value>,
+    patch_confidence: Option<f32>,
+    emitter: &mut Emitter,
+) -> Result<()> {
+    let decision = run_hooks(HookContext {
+        event,
+        command,
+        repo,
+        cwd,
+        config: resolved_config,
+        git_snapshot,
+        intent: None,
+        commit_plan: None,
+        commit_group: None,
+        commit_message: None,
+        agent_task,
+        agent_request_summary,
+        agent_response_summary,
+        patch_confidence,
+    })
+    .await?;
+    if decision.blocked {
+        let reason = decision
+            .reason
+            .unwrap_or_else(|| format!("hook blocked {event}"));
+        emitter
+            .emit(
+                "commandFailed",
+                Some("ai_wait"),
+                Some(reason.clone()),
+                Some(json!({ "blocked": true, "event": event })),
+            )
+            .await?;
+        return Err(anyhow!(reason));
+    }
+    Ok(())
+}
+
 async fn attempt_ai_resolution(
     git: &GitExec,
+    command: &str,
+    cwd: &PathBuf,
     repo: Option<&git::RepoContext>,
+    resolved_config: &config::ResolvedConfig,
     conflicts: &[String],
     store: Option<&RunStore>,
     emitter: &mut Emitter,
@@ -1059,15 +1297,61 @@ async fn attempt_ai_resolution(
         }
     };
 
-    let patch = client
-        .resolve_conflicts(git, conflicts, emitter, store)
+    let repo_context = match repo {
+        Some(repo_ctx) => Some(collect_repo_context(git, repo_ctx, client.config()).await),
+        None => None,
+    };
+    let request = client
+        .build_conflict_request(git, conflicts, repo_context)
         .await?;
+
+    if let Some(repo_ctx) = repo {
+        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
+        let request_summary = request.summary();
+        run_ai_hook(
+            "beforeAiRequest",
+            command,
+            cwd,
+            repo_ctx,
+            resolved_config,
+            &snapshot,
+            Some(request.task_name()),
+            Some(&request_summary),
+            None,
+            None,
+            emitter,
+        )
+        .await?;
+    }
+
+    let exchange = client.execute(request, emitter, store).await?;
+    if let Some(repo_ctx) = repo {
+        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
+        let request_summary = exchange.request_summary();
+        let response_summary = exchange.response_summary();
+        run_ai_hook(
+            "afterAiResponse",
+            command,
+            cwd,
+            repo_ctx,
+            resolved_config,
+            &snapshot,
+            Some(exchange.task_name()),
+            Some(&request_summary),
+            Some(&response_summary),
+            exchange.patch_confidence(),
+            emitter,
+        )
+        .await?;
+    }
+
+    let patch = exchange.into_patch()?;
     if let Some(store) = store {
         store.write_json("patch.json", &patch)?;
     }
     emitter
         .emit(
-            "patch_ready",
+            "ai_patch_ready",
             Some("ai_wait"),
             Some("conflict patch generated".to_string()),
             Some(json!({
@@ -1081,6 +1365,10 @@ async fn attempt_ai_resolution(
 
 async fn maybe_apply_patch(
     git: &GitExec,
+    command: &str,
+    cwd: &PathBuf,
+    repo: Option<&git::RepoContext>,
+    resolved_config: &config::ResolvedConfig,
     patch: Option<AiPatch>,
     store: Option<RunStore>,
     emitter: &mut Emitter,
@@ -1100,11 +1388,51 @@ async fn maybe_apply_patch(
         return Ok(());
     }
 
+    if let Some(repo_ctx) = repo {
+        let snapshot = git.inspect_snapshot().await.unwrap_or_default();
+        let request_summary = json!({
+            "task": "resolve_conflicts",
+            "hasRepoContext": true,
+            "conflictFiles": patch.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+        });
+        let response_summary = json!({
+            "task": "resolve_conflicts",
+            "kind": "patch",
+            "patchConfidence": patch.confidence,
+            "fileCount": patch.files.len(),
+        });
+        run_ai_hook(
+            "beforePatchApply",
+            command,
+            cwd,
+            repo_ctx,
+            resolved_config,
+            &snapshot,
+            Some("resolve_conflicts"),
+            Some(&request_summary),
+            Some(&response_summary),
+            Some(patch.confidence),
+            emitter,
+        )
+        .await?;
+    }
+
     for file in &patch.files {
         git.write_file(&file.path, &file.resolved_content).await?;
         git.run(&["add".to_string(), file.path.clone()], emitter)
             .await?;
     }
+    emitter
+        .emit(
+            "ai_patch_applied",
+            Some("exec"),
+            Some("applied conflict patch".to_string()),
+            Some(json!({
+                "confidence": patch.confidence,
+                "files": patch.files.iter().map(|file| file.path.clone()).collect::<Vec<_>>(),
+            })),
+        )
+        .await?;
 
     let unresolved = git.unresolved_conflicts().await?;
     let diff_clean = git.diff_check().await?;
