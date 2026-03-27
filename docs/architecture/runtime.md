@@ -3,11 +3,20 @@
 - Command entry: `src/main.rs` -> `src/lib.rs::run()`
 - Main flow: parse command -> classify risk -> run git or AI -> emit events -> update run metadata
 - Config resolution order: CLI overrides -> repo config -> user config -> defaults
+- Config files are only created by explicit init commands.
+  - `git-raft init` creates user-level config files under `~/.config/git-raft/`.
+  - `git-raft init --project` creates repo-local config files.
 - Commit planning uses git snapshot inspection, generated scope catalogs, configured commit format, and repo-local commit examples.
-- Hook execution order is fixed: built-in rules plus matching external hooks for `beforeCommand`, `afterCommand`, `commandFailed`, `afterCommitPlan`, `beforeGroupCommit`, and `afterGroupCommit`.
+- AI request flow is task-scoped.
+  - `ask` and conflict resolution build a structured AI request first.
+  - `commit` also builds a structured AI planning request and expects strict JSON `CommitPlan` output.
+  - The model response is recorded before any patch application happens.
+  - File writes and `git add` stay in the host runtime.
+- Hook execution order is fixed: built-in rules plus matching external hooks for `beforeCommand`, `afterCommand`, `commandFailed`, `afterCommitPlan`, `beforeGroupCommit`, `afterGroupCommit`, `beforeAiRequest`, `afterAiResponse`, and `beforePatchApply`.
 - Event output supports two modes:
   - Human-readable output to the terminal by default
   - Machine-readable NDJSON with `--json`
+- AI lifecycle events include `ai_request_started`, `ai_response_ready`, `ai_response_invalid`, `ai_patch_ready`, and `ai_patch_applied`.
 - Fixed runtime files:
   - `.config/git-raft/config.toml`
   - `.config/git-raft/commit_examples.md`
@@ -15,3 +24,5 @@
   - `.git/git-raft/runs/<run-id>/run.json`
   - `.git/git-raft/runs/<run-id>/events.ndjson`
   - optional `ai-request.json`, `ai-response.json`, and `patch.json`
+- `ai-request.json` stores the task name, the structured AI request, and the raw provider request body.
+- `ai-response.json` stores the task name, the normalized AI response, a response summary, and the raw provider response body.

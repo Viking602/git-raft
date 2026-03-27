@@ -3,6 +3,13 @@
 - Keep verification entry points here.
 - Prefer commands that reproduce results directly.
 - Common entry points are `cargo build`, `cargo test`, and `cargo run`.
+- Local convenience entry points are available in `Makefile`.
+- Common `make` shortcuts:
+  - `make build`
+  - `make test`
+  - `make cli-test`
+  - `make guardrails`
+  - `make install`
 - Current shortest path:
   - `cargo test --test cli`
   - `cargo test --test guardrails`

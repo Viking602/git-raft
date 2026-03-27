@@ -1,11 +1,33 @@
 # CLI
 
 - Binary name: `git-raft`
-- The repository-local config file is generated automatically at `.config/git-raft/config.toml`.
+- The repository-local config file lives at `.config/git-raft/config.toml`.
+- `init` creates config files only when you ask for it.
+  - `git-raft init` defaults to user-level config under `~/.config/git-raft/`.
+  - `git-raft init --project` initializes the repository-local config and commit examples.
 - The optional user-level config file is `~/.config/git-raft/config.toml`.
-- The repository-local commit example file is generated automatically at `.config/git-raft/commit_examples.md`.
+- The repository-local commit example file lives at `.config/git-raft/commit_examples.md`.
 - Model selection is configured under `[provider].model`.
+- Model authentication can use either `[provider].api_key` or `[provider].api_key_env`.
+  - If `api_key` is non-empty, `git-raft` uses it first.
+  - If `api_key` is empty, `git-raft` falls back to the environment variable named by `api_key_env`.
 - Commit message format selection is configured under `[commit].format`.
+- Commit subject language is configured under `[commit].language`.
+  - Default is `en`.
+  - Current built-in values are `en` and `zh`.
+- `commit --language <en|zh>` can override the configured commit language for one run.
+- Commit body generation is configured under `[commit].include_body`.
+  - Default is `true`.
+  - Default planner output now includes a subject line plus a generated body.
+- Commit footer generation is configured under `[commit].include_footer`.
+  - Default is `false`.
+  - When enabled, planner appends a trailer-style `Files:` footer.
+- `use_gitmoji` can be enabled under `[commit]`.
+  - Default is `false`.
+  - When it is `true`, commit planner emits gitmoji-style messages even if `format` is not `gitmoji`.
+- Commit planner ignore rules are configured under `[commit].ignore_paths`.
+  - Rules match exact paths or directory prefixes.
+  - By default, planner ignores common tool directories such as `.codex/`, `.claude/`, `.cursor/`, `.windsurf/`, `.zed/`, `.vscode/`, `.idea/`, and `.roo/`.
 - Built-in commit format presets:
   - `conventional`
   - `angular`
@@ -19,18 +41,23 @@
   - `scopes generate`
   - `scopes list`
 - `commit` is planner-driven.
-  - `commit --plan` prints a non-mutating plan.
-  - `commit --intent <text>` biases grouping and commit message generation.
+  - `commit --plan` requests the AI planner and prints a non-mutating plan.
+  - `commit --intent <text>` is passed to the AI planner as extra guidance.
   - staged and unstaged changes are planned together by default.
+  - `commit` now requires a configured AI provider because grouping and commit messages are AI-generated.
 - Global flags:
   - `--json`: emit NDJSON event output
   - `--yes`: confirm high-risk operations
 - Current commands:
   - `status`, `diff`, `add`, `commit`, `branch`, `switch`
   - `sync`, `merge`, `rebase`, `stash`, `log`
-  - `ask`, `rollback`, `runs`, `trace`, `doctor`, `config`, `scopes`
+  - `ask`, `init`, `rollback`, `runs`, `trace`, `doctor`, `config`, `scopes`
 - Hook support:
   - built-in rules live under `[hooks.rules]`
   - external hooks live under `[[hooks.external]]`
   - hook payloads use camelCase JSON keys
+  - AI-specific external hook events are `beforeAiRequest`, `afterAiResponse`, and `beforePatchApply`
+  - AI hook payloads can include `agentTask`, `agentRequestSummary`, `agentResponseSummary`, and `patchConfidence`
+- `ask` records structured AI request and response artifacts inside the run directory when the command runs inside a repository.
+- `merge --apply-ai` and `rebase --apply-ai` still leave file writes, staging, and verification in the host runtime even when the model proposes a patch.
 - First-class git subcommands that are not explicitly modeled go through external passthrough, but still pass through the event stream and risk classification.
