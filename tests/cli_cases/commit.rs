@@ -403,7 +403,11 @@ fn commit_plan_reuses_cached_plan_for_identical_input() {
         &["--json", "commit", "--plan"],
         &[("GIT_RAFT_API_KEY", "test-key")],
     );
-    assert!(first.status.success(), "first commit plan failed: {:?}", first);
+    assert!(
+        first.status.success(),
+        "first commit plan failed: {:?}",
+        first
+    );
 
     drop(server);
 
@@ -428,10 +432,21 @@ fn commit_plan_reuses_cached_plan_for_identical_input() {
 fn commit_plan_cache_ignores_recent_subject_changes_for_same_change_set() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
-    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login_v1() {}\n").expect("write auth");
+    fs::write(
+        repo.path().join("src/auth/mod.rs"),
+        "pub fn login_v1() {}\n",
+    )
+    .expect("write auth");
     run_git(repo.path(), ["add", "src/auth/mod.rs"]);
-    run_git(repo.path(), ["commit", "-m", "feat(auth): add auth baseline"]);
-    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login_v2() {}\n").expect("update auth");
+    run_git(
+        repo.path(),
+        ["commit", "-m", "feat(auth): add auth baseline"],
+    );
+    fs::write(
+        repo.path().join("src/auth/mod.rs"),
+        "pub fn login_v2() {}\n",
+    )
+    .expect("update auth");
 
     let server = MockAiServer::start(vec![ai_commit_plan_tool_response(
         serde_json::json!([commit_group(
@@ -449,11 +464,18 @@ fn commit_plan_cache_ignores_recent_subject_changes_for_same_change_set() {
         &["--json", "commit", "--plan"],
         &[("GIT_RAFT_API_KEY", "test-key")],
     );
-    assert!(first.status.success(), "first commit plan failed: {:?}", first);
+    assert!(
+        first.status.success(),
+        "first commit plan failed: {:?}",
+        first
+    );
 
     fs::write(repo.path().join("notes.md"), "history only\n").expect("write notes");
     run_git(repo.path(), ["add", "notes.md"]);
-    run_git(repo.path(), ["commit", "-m", "chore: unrelated history update"]);
+    run_git(
+        repo.path(),
+        ["commit", "-m", "chore: unrelated history update"],
+    );
 
     drop(server);
 
@@ -475,10 +497,21 @@ fn commit_plan_cache_ignores_recent_subject_changes_for_same_change_set() {
 fn commit_plan_cache_misses_when_diff_changes_on_same_files() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
-    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login_v1() {}\n").expect("write auth");
+    fs::write(
+        repo.path().join("src/auth/mod.rs"),
+        "pub fn login_v1() {}\n",
+    )
+    .expect("write auth");
     run_git(repo.path(), ["add", "src/auth/mod.rs"]);
-    run_git(repo.path(), ["commit", "-m", "feat(auth): add auth baseline"]);
-    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login_v2() {}\n").expect("update auth");
+    run_git(
+        repo.path(),
+        ["commit", "-m", "feat(auth): add auth baseline"],
+    );
+    fs::write(
+        repo.path().join("src/auth/mod.rs"),
+        "pub fn login_v2() {}\n",
+    )
+    .expect("update auth");
 
     let server = MockAiServer::start(vec![ai_commit_plan_tool_response(
         serde_json::json!([commit_group(
@@ -496,10 +529,17 @@ fn commit_plan_cache_misses_when_diff_changes_on_same_files() {
         &["--json", "commit", "--plan"],
         &[("GIT_RAFT_API_KEY", "test-key")],
     );
-    assert!(first.status.success(), "first commit plan failed: {:?}", first);
+    assert!(
+        first.status.success(),
+        "first commit plan failed: {:?}",
+        first
+    );
 
-    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login_v3() {}\n")
-        .expect("change auth diff");
+    fs::write(
+        repo.path().join("src/auth/mod.rs"),
+        "pub fn login_v3() {}\n",
+    )
+    .expect("change auth diff");
     drop(server);
 
     let second = run_agent_with_env(
@@ -1045,7 +1085,10 @@ fn commit_plan_uses_chinese_subject_when_configured() {
         .as_array()
         .expect("groups array");
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0]["commit_message"], "feat(auth): 更新 auth 相关改动");
+    assert_eq!(
+        groups[0]["commit_message"],
+        "feat(auth): 更新 auth 相关改动"
+    );
     let request = first_ai_user_request(&server);
     assert_eq!(
         request["user_payload"]["format_preferences"]["language"],
@@ -1081,7 +1124,10 @@ fn commit_language_flag_overrides_config_language() {
         .as_array()
         .expect("groups array");
     assert_eq!(groups.len(), 1);
-    assert_eq!(groups[0]["commit_message"], "feat(auth): 更新 auth 相关改动");
+    assert_eq!(
+        groups[0]["commit_message"],
+        "feat(auth): 更新 auth 相关改动"
+    );
     let request = first_ai_user_request(&server);
     assert_eq!(
         request["user_payload"]["format_preferences"]["language"],

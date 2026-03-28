@@ -1,5 +1,4 @@
-use super::commit_plan_tool::commit_plan_tool_definition;
-use super::truncate_text;
+use super::commit_plan_tool::{commit_plan_tool_definition, resolve_conflicts_tool_definition};
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -10,7 +9,6 @@ use crate::git::{DiffStat, GitSnapshot};
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum AgentTask {
-    Ask,
     ResolveConflicts,
     PlanCommit,
 }
@@ -18,7 +16,6 @@ pub(crate) enum AgentTask {
 impl AgentTask {
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
-            Self::Ask => "ask",
             Self::ResolveConflicts => "resolve_conflicts",
             Self::PlanCommit => "plan_commit",
         }
@@ -59,11 +56,6 @@ impl AgentRequest {
     }
 
     pub(crate) fn summary(&self) -> Value {
-        let prompt_preview = self
-            .user_payload
-            .get("prompt")
-            .and_then(Value::as_str)
-            .map(|prompt| truncate_text(prompt, 160));
         let conflict_files = self
             .user_payload
             .get("conflicts")
@@ -76,11 +68,16 @@ impl AgentRequest {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let attempt = self
+            .user_payload
+            .get("attempt")
+            .and_then(Value::as_u64)
+            .unwrap_or(1);
         json!({
             "task": self.task_name(),
+            "attempt": attempt,
             "hasRepoContext": self.repo_context.is_some(),
             "branch": self.repo_context.as_ref().and_then(|ctx| ctx.branch.clone()),
-            "promptPreview": prompt_preview,
             "conflictFiles": conflict_files,
             "recentSubjectCount": self.repo_context.as_ref().map_or(0, |ctx| ctx.recent_subjects.len()),
             "diffStatCount": self.repo_context.as_ref().map_or(0, |ctx| ctx.diff_stats.len()),
@@ -105,23 +102,41 @@ impl AgentRequest {
                 }
             ]
         });
-        if matches!(self.task, AgentTask::PlanCommit)
-            && let Some(object) = request.as_object_mut()
-        {
-            object.insert("temperature".to_string(), json!(0.0));
-            object.insert(
-                "tools".to_string(),
-                Value::Array(vec![commit_plan_tool_definition()]),
-            );
-            object.insert(
-                "tool_choice".to_string(),
-                json!({
-                    "type": "function",
-                    "function": {
-                        "name": "plan_commit"
-                    }
-                }),
-            );
+        if let Some(object) = request.as_object_mut() {
+            match self.task {
+                AgentTask::ResolveConflicts => {
+                    object.insert("temperature".to_string(), json!(0.0));
+                    object.insert(
+                        "tools".to_string(),
+                        Value::Array(vec![resolve_conflicts_tool_definition()]),
+                    );
+                    object.insert(
+                        "tool_choice".to_string(),
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": "resolve_conflicts"
+                            }
+                        }),
+                    );
+                }
+                AgentTask::PlanCommit => {
+                    object.insert("temperature".to_string(), json!(0.0));
+                    object.insert(
+                        "tools".to_string(),
+                        Value::Array(vec![commit_plan_tool_definition()]),
+                    );
+                    object.insert(
+                        "tool_choice".to_string(),
+                        json!({
+                            "type": "function",
+                            "function": {
+                                "name": "plan_commit"
+                            }
+                        }),
+                    );
+                }
+            }
         }
         Ok(request)
     }

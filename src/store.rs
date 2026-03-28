@@ -1,5 +1,5 @@
 use crate::events::Event;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -25,16 +25,6 @@ pub enum RunStatus {
     Running,
     Succeeded,
     Failed,
-}
-
-impl RunStatus {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Succeeded => "succeeded",
-            Self::Failed => "failed",
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -111,48 +101,6 @@ impl RunStore {
         fs::write(self.run_dir.join(name), serde_json::to_vec_pretty(value)?)?;
         Ok(())
     }
-
-    pub fn list(git_dir: PathBuf) -> Result<Vec<RunRecord>> {
-        let runs_dir = git_dir.join("git-raft").join("runs");
-        if !runs_dir.exists() {
-            return Ok(Vec::new());
-        }
-        let mut records = fs::read_dir(runs_dir)?
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.path().join("run.json"))
-            .filter(|path| path.exists())
-            .map(|path| {
-                let bytes = fs::read(path)?;
-                Ok(serde_json::from_slice::<RunRecord>(&bytes)?)
-            })
-            .collect::<Result<Vec<_>>>()?;
-        records.sort_by(|left, right| right.started_at_ms.cmp(&left.started_at_ms));
-        Ok(records)
-    }
-
-    pub fn load(git_dir: PathBuf, run_id: &str) -> Result<RunRecord> {
-        let path = git_dir
-            .join("git-raft")
-            .join("runs")
-            .join(run_id)
-            .join("run.json");
-        let bytes = fs::read(&path).with_context(|| format!("missing run.json for {run_id}"))?;
-        Ok(serde_json::from_slice(&bytes)?)
-    }
-
-    pub fn read_events(git_dir: PathBuf, run_id: &str) -> Result<Vec<String>> {
-        let path = git_dir
-            .join("git-raft")
-            .join("runs")
-            .join(run_id)
-            .join("events.ndjson");
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-        let content = fs::read_to_string(path)?;
-        Ok(content.lines().map(str::to_string).collect())
-    }
-
     fn write_record(&self) -> Result<()> {
         let record = self.record.lock().expect("lock").clone();
         fs::write(

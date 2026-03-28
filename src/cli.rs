@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand, ValueEnum};
 
+/// Run git-raft commands with tracing, hooks, and risk checks.
 #[derive(Parser, Debug)]
 #[command(
     name = "git-raft",
@@ -7,145 +8,82 @@ use clap::{Parser, Subcommand, ValueEnum};
     about = "Git-oriented CLI agent with traces and risk gates"
 )]
 pub struct Cli {
+    /// Emit newline-delimited JSON events instead of human-readable output.
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Skip confirmation prompts for high-risk operations.
     #[arg(long, global = true)]
     pub yes: bool,
 
+    /// Command to execute.
     #[command(subcommand)]
     pub command: CommandKind,
 }
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum CommandKind {
-    Status {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Diff {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Add {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
+    /// Ask the AI planner to group changes and create commits.
     Commit {
+        /// Print the planned commit groups without creating commits.
         #[arg(long)]
         plan: bool,
+        /// Preview the planned commit execution without creating commits.
         #[arg(long)]
         dry_run: bool,
+        /// Extra guidance passed to the AI commit planner.
         #[arg(long)]
         intent: Option<String>,
+        /// Override the configured commit subject language for this run.
         #[arg(long, value_enum)]
         language: Option<CommitLanguageArg>,
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
+        /// Accepted after -- for compatibility; currently ignored by the commit planner.
+        #[arg(
+            allow_hyphen_values = true,
+            trailing_var_arg = true,
+            value_name = "ARGS"
+        )]
         args: Vec<String>,
     },
-    Branch {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Switch {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Sync {
-        #[arg(long)]
-        merge: bool,
-    },
+    /// Run git merge and optionally ask AI to resolve conflicts.
     Merge {
+        /// Branch, commit, or ref to merge into the current branch.
+        #[arg(value_name = "TARGET")]
         target: String,
+        /// Try AI conflict resolution when merge stops on conflicts.
         #[arg(long, default_value_t = true)]
         apply_ai: bool,
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
+        /// Extra arguments passed to git merge.
+        #[arg(
+            allow_hyphen_values = true,
+            trailing_var_arg = true,
+            value_name = "GIT_ARGS"
+        )]
         args: Vec<String>,
     },
+    /// Run git rebase and optionally ask AI to resolve conflicts.
     Rebase {
+        /// Branch, commit, or ref to rebase onto.
+        #[arg(value_name = "TARGET")]
         target: String,
+        /// Try AI conflict resolution when rebase stops on conflicts.
         #[arg(long, default_value_t = true)]
         apply_ai: bool,
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
+        /// Extra arguments passed to git rebase.
+        #[arg(
+            allow_hyphen_values = true,
+            trailing_var_arg = true,
+            value_name = "GIT_ARGS"
+        )]
         args: Vec<String>,
     },
-    Stash {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Log {
-        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
-        args: Vec<String>,
-    },
-    Ask {
-        #[arg(required = true)]
-        prompt: Vec<String>,
-    },
-    Init {
-        #[arg(long, default_value_t = false)]
-        project: bool,
-    },
-    Rollback {
-        run_id: String,
-    },
-    Runs,
-    Trace {
-        run_id: Option<String>,
-    },
-    Doctor,
-    Config {
-        #[command(subcommand)]
-        command: ConfigCommand,
-    },
-    Scopes {
-        #[command(subcommand)]
-        command: ScopesCommand,
-    },
-    #[command(external_subcommand)]
-    External(Vec<String>),
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum ConfigCommand {
-    Show {
-        #[arg(long, value_enum, default_value_t = ConfigScopeArg::Resolved)]
-        scope: ConfigScopeArg,
-    },
-    Get {
-        key: String,
-        #[arg(long, value_enum, default_value_t = ConfigScopeArg::Resolved)]
-        scope: ConfigScopeArg,
-    },
-    Set {
-        key: String,
-        value: String,
-        #[arg(long, value_enum)]
-        scope: ConfigWritableScopeArg,
-    },
-}
-
-#[derive(Subcommand, Debug, Clone)]
-pub enum ScopesCommand {
-    Generate,
-    List,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ConfigScopeArg {
-    User,
-    Repo,
-    Resolved,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ConfigWritableScopeArg {
-    User,
-    Repo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CommitLanguageArg {
+    #[value(help = "Generate commit subjects in English.")]
     En,
+    #[value(help = "Generate commit subjects in Chinese.")]
     Zh,
 }
 
@@ -161,26 +99,9 @@ impl CommitLanguageArg {
 impl CommandKind {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Status { .. } => "status",
-            Self::Diff { .. } => "diff",
-            Self::Add { .. } => "add",
             Self::Commit { .. } => "commit",
-            Self::Branch { .. } => "branch",
-            Self::Switch { .. } => "switch",
-            Self::Sync { .. } => "sync",
             Self::Merge { .. } => "merge",
             Self::Rebase { .. } => "rebase",
-            Self::Stash { .. } => "stash",
-            Self::Log { .. } => "log",
-            Self::Ask { .. } => "ask",
-            Self::Init { .. } => "init",
-            Self::Rollback { .. } => "rollback",
-            Self::Runs => "runs",
-            Self::Trace { .. } => "trace",
-            Self::Doctor => "doctor",
-            Self::Config { .. } => "config",
-            Self::Scopes { .. } => "scopes",
-            Self::External(_) => "external",
         }
     }
 }

@@ -14,6 +14,8 @@ pub(crate) fn init_repo() -> TempDir {
     run_git(dir.path(), ["init", "--initial-branch=main"]);
     run_git(dir.path(), ["config", "user.name", "Test User"]);
     run_git(dir.path(), ["config", "user.email", "test@example.com"]);
+    run_git(dir.path(), ["config", "core.autocrlf", "false"]);
+    run_git(dir.path(), ["config", "core.eol", "lf"]);
     fs::write(dir.path().join("README.md"), "hello\n").expect("write readme");
     run_git(dir.path(), ["add", "README.md"]);
     run_git(dir.path(), ["commit", "-m", "init"]);
@@ -47,24 +49,11 @@ pub(crate) fn config_file(repo: &Path) -> PathBuf {
     repo.join(".config/git-raft/config.toml")
 }
 
-pub(crate) fn commit_examples_file(repo: &Path) -> PathBuf {
-    repo.join(".config/git-raft/commit_examples.md")
-}
-
-pub(crate) fn user_config_file(home: &Path) -> PathBuf {
-    home.join(".config/git-raft/config.toml")
-}
-
-pub(crate) fn user_commit_examples_file(home: &Path) -> PathBuf {
-    home.join(".config/git-raft/commit_examples.md")
-}
-
 pub(crate) fn run_agent(repo: &Path, args: &[&str]) -> std::process::Output {
-    StdCommand::new(env!("CARGO_BIN_EXE_git-raft"))
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .expect("run git-raft")
+    let mut command = StdCommand::new(env!("CARGO_BIN_EXE_git-raft"));
+    command.args(args).current_dir(repo);
+    apply_test_home(&mut command, repo, &[]);
+    command.output().expect("run git-raft")
 }
 
 pub(crate) fn run_agent_with_env(
@@ -74,10 +63,153 @@ pub(crate) fn run_agent_with_env(
 ) -> std::process::Output {
     let mut command = StdCommand::new(env!("CARGO_BIN_EXE_git-raft"));
     command.args(args).current_dir(repo);
+    apply_test_home(&mut command, repo, envs);
     for (key, value) in envs {
         command.env(key, value);
     }
     command.output().expect("run git-raft with env")
+}
+
+pub(crate) struct HookCommand {
+    pub program: String,
+    pub args: Vec<String>,
+}
+
+pub(crate) fn write_external_hook(
+    repo: &Path,
+    script_name: &str,
+    payload_path: &str,
+    response_json: Option<&str>,
+) -> HookCommand {
+    let hook_dir = repo.join(".config/git-raft");
+    fs::create_dir_all(&hook_dir).expect("hook dir");
+
+    if cfg!(windows) {
+        let script_rel = format!(".config/git-raft/{script_name}.ps1");
+        let script_path = hook_dir.join(format!("{script_name}.ps1"));
+        let mut script = String::from(
+            "$payload = [Console]::In.ReadToEnd()\n[System.IO.File]::WriteAllText($args[0], $payload)\n",
+        );
+        if let Some(response_json) = response_json {
+            script.push_str(&format!(
+                "Write-Output '{}'\n",
+                response_json.replace('\'', "''")
+            ));
+        }
+        fs::write(&script_path, script).expect("write powershell hook");
+        HookCommand {
+            program: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                script_rel,
+                payload_path.to_string(),
+            ],
+        }
+    } else {
+        let script_rel = format!(".config/git-raft/{script_name}.sh");
+        let script_path = hook_dir.join(format!("{script_name}.sh"));
+        let mut script = String::from("#!/bin/sh\ncat > \"$1\"\n");
+        if let Some(response_json) = response_json {
+            script.push_str(&format!("printf '%s' '{}'\n", response_json));
+        }
+        fs::write(&script_path, script).expect("write shell hook");
+        HookCommand {
+            program: "sh".to_string(),
+            args: vec![script_rel, payload_path.to_string()],
+        }
+    }
+}
+
+pub(crate) fn external_hook_toml(event: &str, hook: &HookCommand) -> String {
+    let args = hook
+        .args
+        .iter()
+        .map(|arg| format!("{arg:?}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        r#"
+
+[[hooks.external]]
+event = "{event}"
+program = {program:?}
+args = [{args}]
+"#,
+        program = hook.program
+    )
+}
+
+pub(crate) fn merge_verification_toml(repair_attempts: usize, commands: &[HookCommand]) -> String {
+    let mut toml = format!(
+        r#"
+
+[merge]
+repair_attempts = {repair_attempts}
+"#
+    );
+    for command in commands {
+        let args = command
+            .args
+            .iter()
+            .map(|arg| format!("{arg:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        toml.push_str(&format!(
+            r#"
+
+[[merge.verification]]
+program = {program:?}
+args = [{args}]
+"#,
+            program = command.program
+        ));
+    }
+    toml
+}
+
+pub(crate) fn write_repo_command_script(repo: &Path, script_name: &str, body: &str) -> HookCommand {
+    let command_dir = repo.join(".config/git-raft");
+    fs::create_dir_all(&command_dir).expect("command dir");
+
+    if cfg!(windows) {
+        let script_rel = format!(".config/git-raft/{script_name}.ps1");
+        let script_path = command_dir.join(format!("{script_name}.ps1"));
+        fs::write(&script_path, body).expect("write powershell command");
+        HookCommand {
+            program: "powershell.exe".to_string(),
+            args: vec![
+                "-NoProfile".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+                "-File".to_string(),
+                script_rel,
+            ],
+        }
+    } else {
+        let script_rel = format!(".config/git-raft/{script_name}.sh");
+        let script_path = command_dir.join(format!("{script_name}.sh"));
+        fs::write(&script_path, body).expect("write shell command");
+        HookCommand {
+            program: "sh".to_string(),
+            args: vec![script_rel],
+        }
+    }
+}
+
+fn apply_test_home(command: &mut StdCommand, repo: &Path, envs: &[(&str, &str)]) {
+    let home = envs
+        .iter()
+        .find_map(|(key, value)| match *key {
+            "HOME" | "USERPROFILE" => Some((*value).to_string()),
+            _ => None,
+        })
+        .unwrap_or_else(|| repo.with_extension("home").display().to_string());
+    fs::create_dir_all(&home).expect("create test home");
+    command.env("HOME", &home);
+    command.env("USERPROFILE", &home);
 }
 
 pub(crate) struct MockAiServer {
@@ -234,20 +366,35 @@ pub(crate) fn ai_text_response(text: &str) -> Value {
 }
 
 pub(crate) fn ai_patch_response(path: &str, content: &str) -> Value {
-    ai_text_response(
-        &serde_json::json!({
-            "confidence": 0.95,
-            "summary": "resolved conflict",
-            "files": [
-                {
-                    "path": path,
-                    "explanation": "apply merged content",
-                    "resolved_content": content
+    serde_json::json!({
+        "choices": [
+            {
+                "message": {
+                    "content": null,
+                    "tool_calls": [
+                        {
+                            "id": "call_resolve_conflicts",
+                            "type": "function",
+                            "function": {
+                                "name": "resolve_conflicts",
+                                "arguments": serde_json::json!({
+                                    "confidence": 0.95,
+                                    "summary": "resolved conflict",
+                                    "files": [
+                                        {
+                                            "path": path,
+                                            "explanation": "apply merged content",
+                                            "resolved_content": content
+                                        }
+                                    ]
+                                }).to_string()
+                            }
+                        }
+                    ]
                 }
-            ]
-        })
-        .to_string(),
-    )
+            }
+        ]
+    })
 }
 
 pub(crate) fn ai_commit_plan_response(groups: Value, confidence: f32) -> Value {
@@ -422,8 +569,12 @@ dir = ".git/git-raft/runs"
 }
 
 pub(crate) fn first_ai_user_request(server: &MockAiServer) -> Value {
+    nth_ai_user_request(server, 0)
+}
+
+pub(crate) fn nth_ai_user_request(server: &MockAiServer, index: usize) -> Value {
     let requests = server.requests();
-    let content = requests[0]["messages"][1]["content"]
+    let content = requests[index]["messages"][1]["content"]
         .as_str()
         .expect("user content");
     serde_json::from_str(content).expect("parse ai user request")
@@ -446,7 +597,12 @@ pub(crate) fn run_commit_with_mock_ai<T: Into<MockAiResponse>>(
     (server, output)
 }
 
-pub(crate) fn write_ai_repo_config(repo: &Path, base_url: &str, extra_hooks: &str) {
+pub(crate) fn write_merge_ai_repo_config(
+    repo: &Path,
+    base_url: &str,
+    extra_merge: &str,
+    extra_hooks: &str,
+) {
     fs::create_dir_all(config_file(repo).parent().expect("repo config parent"))
         .expect("mkdir repo config");
     fs::write(
@@ -460,6 +616,7 @@ api_key_env = "GIT_RAFT_API_KEY"
 [commit]
 format = "conventional"
 examples_file = ".config/git-raft/commit_examples.md"
+{extra_merge}
 
 [hooks.rules]
 validate_message_format = true
@@ -473,6 +630,10 @@ dir = ".git/git-raft/runs"
         ),
     )
     .expect("write ai config");
+}
+
+pub(crate) fn write_ai_repo_config(repo: &Path, base_url: &str, extra_hooks: &str) {
+    write_merge_ai_repo_config(repo, base_url, "", extra_hooks);
 }
 
 pub(crate) fn parse_events(output: &[u8]) -> Vec<Value> {

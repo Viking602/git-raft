@@ -1,0 +1,24 @@
+# Structure Split
+
+- Updated: 2026-03-28
+- Goal: finish the current internal module split without changing CLI behavior.
+- Scope:
+  - keep the phase 1 `src/lib.rs` and `merge/rebase` split in place
+  - split `src/commands/commit.rs` by responsibility
+  - split `src/commit.rs` into focused domain helpers
+  - finish the `src/ai.rs` decomposition inside `src/ai/`
+  - split `src/config.rs` into focused internal helpers
+  - split `src/git.rs` and `src/hooks.rs` into internal submodules when the move is mechanical
+- Out of scope:
+  - multi-crate split
+  - CLI behavior changes
+  - unrelated refactors outside the touched command/runtime paths
+- Final outcome:
+  - phase 1 complete: `src/lib.rs` -> `src/app/`, `merge/rebase` -> `src/commands/merge_rebase.rs`
+  - phase 2 complete: split `commit`, `commands/commit`, `ai`, `config`, `git`, and `hooks` into internal submodules
+  - runtime and architecture docs now point at the split module boundaries
+- Verification:
+  - `cargo build`
+  - `cargo test --test cli`
+  - `cargo test --test guardrails`
+  - result on 2026-03-28: build passed, CLI tests passed (34/34), guardrails passed (4/4)

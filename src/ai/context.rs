@@ -1,6 +1,7 @@
 use crate::git::{GitExec, RepoContext};
 
-use super::{AiConfig, RepoContextPayload};
+use super::AiConfig;
+use super::request::RepoContextPayload;
 
 pub(crate) async fn collect_repo_context(
     git: &GitExec,
