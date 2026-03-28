@@ -1,67 +1,86 @@
 # CLI
 
 - Binary name: `git-raft`
-- The repository-local config file lives at `.config/git-raft/config.toml`.
-- `init` creates config files only when you ask for it.
-  - `git-raft init` defaults to user-level config under `~/.config/git-raft/`.
-  - `git-raft init --project` initializes the repository-local config and commit examples.
-- The optional user-level config file is `~/.config/git-raft/config.toml`.
-- The repository-local commit example file lives at `.config/git-raft/commit_examples.md`.
-- Model selection is configured under `[provider].model`.
-- Model authentication can use either `[provider].api_key` or `[provider].api_key_env`.
-  - If `api_key` is non-empty, `git-raft` uses it first.
-  - If `api_key` is empty, `git-raft` falls back to the environment variable named by `api_key_env`.
-- Commit message format selection is configured under `[commit].format`.
-- Commit subject language is configured under `[commit].language`.
-  - Default is `en`.
-  - Current built-in values are `en` and `zh`.
-- `commit --language <en|zh>` can override the configured commit language for one run.
-- Commit body generation is configured under `[commit].include_body`.
-  - Default is `true`.
-  - Current planner output does not auto-generate body content.
-  - This flag only preserves room for future manual or free-form body support.
-- Commit footer generation is configured under `[commit].include_footer`.
-  - Default is `false`.
-  - When enabled, planner appends the trailer-style `Files:` footer.
-- `use_gitmoji` can be enabled under `[commit]`.
-  - Default is `false`.
-  - When it is `true`, commit planner emits gitmoji-style messages even if `format` is not `gitmoji`.
-- Commit planner ignore rules are configured under `[commit].ignore_paths`.
-  - Rules match exact paths or directory prefixes.
-  - By default, planner ignores common tool directories such as `.codex/`, `.claude/`, `.cursor/`, `.windsurf/`, `.zed/`, `.vscode/`, `.idea/`, and `.roo/`.
-- Built-in commit format presets:
-  - `conventional`
-  - `angular`
-  - `gitmoji`
-  - `simple`
-- Built-in config commands:
-  - `config show [--scope user|repo|resolved]`
-  - `config get <key> [--scope user|repo|resolved]`
-  - `config set <key> <value> --scope user|repo`
-- Scope commands:
-  - `scopes generate`
-  - `scopes list`
-- `commit` is planner-driven.
-  - `commit --plan` requests the AI planner and prints a non-mutating plan.
-  - `commit --dry-run` requests the AI planner and previews the result without creating commits.
-  - `commit --intent <text>` is passed to the AI planner as extra guidance.
-  - staged and unstaged changes are planned together by default.
-  - `commit` now requires a configured AI provider because grouping and commit messages are AI-generated.
-  - The AI must explicitly decide whether the change should stay as one commit or be split.
-  - Split execution is only accepted when the AI's grouping confidence passes the built-in threshold; otherwise the plan collapses to a single commit automatically.
 - Global flags:
   - `--json`: emit NDJSON event output
   - `--yes`: confirm high-risk operations
 - Current commands:
-  - `status`, `diff`, `add`, `commit`, `branch`, `switch`
-  - `sync`, `merge`, `rebase`, `stash`, `log`
-  - `ask`, `init`, `rollback`, `runs`, `trace`, `doctor`, `config`, `scopes`
+  - `commit`
+  - `merge`
+  - `rebase`
+
+- Configuration is file-based.
+  - Repository-local config file: `.config/git-raft/config.toml`
+  - Optional user-level config file: `~/.config/git-raft/config.toml`
+  - Repository-local commit example file: `.config/git-raft/commit_examples.md`
+
+- Provider selection and authentication:
+  - Model selection is configured under `[provider].model`
+  - Base URL can come from `[provider].base_url` or `GIT_RAFT_BASE_URL`
+  - Authentication can use either `[provider].api_key` or `[provider].api_key_env`
+  - If `api_key` is empty, `git-raft` reads the environment variable named by `api_key_env`
+  - `GIT_RAFT_MODEL` overrides `[provider].model`
+
+- `commit` is planner-driven.
+  - `commit --plan` requests the AI planner and prints a non-mutating plan
+  - `commit --dry-run` requests the AI planner and previews the result without creating commits
+  - `commit --intent <text>` is passed to the AI planner as extra guidance
+  - `commit --language <en|zh>` overrides the configured commit subject language for one run
+  - staged and unstaged changes are planned together by default
+  - `commit` requires a configured AI provider because grouping and commit messages are AI-generated
+  - The AI must explicitly decide whether the change should stay as one commit or be split
+  - Split execution is only accepted when the AI grouping confidence clears the built-in threshold
+
+- Commit format behavior:
+  - Commit message format selection is configured under `[commit].format`
+  - Built-in presets are `conventional`, `angular`, `gitmoji`, and `simple`
+  - Commit subject language is configured under `[commit].language`
+  - Built-in language values are `en` and `zh`
+  - `use_gitmoji` can be enabled under `[commit]`
+  - Commit planner ignore rules are configured under `[commit].ignore_paths`
+  - Commit body generation is configured under `[commit].include_body`
+  - Commit footer generation is configured under `[commit].include_footer`
+
+- `merge` and `rebase` can request AI conflict resolution.
+  - `--apply-ai` defaults to `true`
+  - The model returns a structured patch proposal with full file contents for conflicted files
+  - Host runtime checks that the AI result keeps unique non-duplicate conflict content before any write happens
+  - Host runtime runs configured verification commands in a temporary workspace before any write happens
+  - Candidate patches are saved to `patch.json` even when they are rejected for manual review
+  - `validation.json` records each attempt, rejection reason, and verification command result
+  - AI confidence is telemetry only; auto-apply requires retention checks, configured verification, and a clean candidate
+  - When `[merge].verification` is empty, AI can still produce a candidate, but `git-raft` will stop for manual review instead of applying it
+
+- Merge verification is file-based config.
+  - `merge` and `rebase` share the top-level `[merge]` config block
+  - `repair_attempts` controls how many AI repair retries are allowed after the first candidate fails checks
+  - `[[merge.verification]]` defines structured verification commands as `program + args`
+  - Verification commands run from a temporary copy of the repo root without `.git`
+  - Validation commands must not depend on Git metadata
+  - Example:
+
+```toml
+[merge]
+repair_attempts = 1
+
+[[merge.verification]]
+program = "cargo"
+args = ["build"]
+
+[[merge.verification]]
+program = "cargo"
+args = ["test", "--test", "cli"]
+```
+
 - Hook support:
   - built-in rules live under `[hooks.rules]`
   - external hooks live under `[[hooks.external]]`
   - hook payloads use camelCase JSON keys
   - AI-specific external hook events are `beforeAiRequest`, `afterAiResponse`, and `beforePatchApply`
   - AI hook payloads can include `agentTask`, `agentRequestSummary`, `agentResponseSummary`, and `patchConfidence`
-- `ask` records structured AI request and response artifacts inside the run directory when the command runs inside a repository.
-- `merge --apply-ai` and `rebase --apply-ai` still leave file writes, staging, and verification in the host runtime even when the model proposes a patch.
-- First-class git subcommands that are not explicitly modeled go through external passthrough, but still pass through the event stream and risk classification.
+  - `beforePatchApply` only fires after the AI candidate passes retention checks and verification commands
+
+- Removed from the CLI surface:
+  - `ask`
+  - passthrough git subcommands such as `status`, `diff`, `add`, `branch`, `switch`, `stash`, and `log`
+  - support commands such as `sync`, `init`, `rollback`, `runs`, `trace`, `doctor`, `config`, and `scopes`

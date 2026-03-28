@@ -4,6 +4,7 @@
 - Prefer commands that reproduce results directly.
 - Common entry points are `cargo build`, `cargo test`, and `cargo run`.
 - Local convenience entry points are available in `Makefile`.
+- Real AI merge runbook: `docs/quality/real-merge.md`
 - Common `make` shortcuts:
   - `make build`
   - `make test`
@@ -15,8 +16,14 @@
   - `cargo test --test guardrails`
   - `cargo test`
 - Feature-specific checks worth running when this area changes:
-  - `cargo test config_show_merges_user_and_repo_sources --test cli`
-  - `cargo test scopes_generate_persists_and_lists_scope_candidates --test cli`
-  - `cargo test external_before_command_hook_receives_camel_case_payload --test cli`
+  - `cargo test root_help_lists_global_flags_and_agent_commands --test cli`
+  - `cargo test before_command_hook_receives_camel_case_payload_for_agent_command --test cli`
+  - `cargo test before_ai_request_hook_can_block_request --test cli`
+  - `cargo test before_patch_apply_hook_blocks_apply_and_keeps_patch_json --test cli`
   - `cargo test commit_executes_single_group_when_plan_is_confident --test cli`
+  - `cargo test merge_keeps_candidate_for_review_when_verification_is_not_configured --test cli`
+  - `cargo test merge_retries_after_retention_failure_and_applies_second_candidate --test cli`
+  - `cargo test merge_stops_after_second_validation_failure_without_applying_candidate --test cli`
+  - `cargo test merge_rejects_non_utf8_conflict_files_before_requesting_ai --test cli`
 - If manual checks are needed, record them here too, but keep them short.
+- Real-model merge checks are documented in `docs/quality/real-merge.md`.

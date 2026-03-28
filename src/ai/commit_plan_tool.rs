@@ -5,20 +5,36 @@ use crate::commit::CommitPlan;
 
 use super::provider::ChatCompletionResponse;
 
-pub(super) fn extract_commit_plan_tool_args(response: &ChatCompletionResponse) -> Result<CommitPlan> {
-    let tool_call = response
-        .choices
-        .first()
-        .and_then(|choice| {
-            choice.message.tool_calls.iter().find(|tool_call| {
-                tool_call.kind == "function" && tool_call.function.name == "plan_commit"
-            })
-        })
+pub(super) fn extract_commit_plan_tool_args(
+    response: &ChatCompletionResponse,
+) -> Result<CommitPlan> {
+    let tool_call = find_tool_call(response, "plan_commit")
         .ok_or_else(|| anyhow!("AI response did not include plan_commit tool call"))?;
     let mut arguments: Value = serde_json::from_str(&tool_call.function.arguments)
         .context("AI response was not valid commit plan tool arguments")?;
     normalize_commit_plan_arguments(&mut arguments)?;
-    serde_json::from_value(arguments).context("AI response was not valid commit plan tool arguments")
+    serde_json::from_value(arguments)
+        .context("AI response was not valid commit plan tool arguments")
+}
+
+pub(super) fn extract_resolve_conflicts_tool_args(
+    response: &ChatCompletionResponse,
+) -> Result<crate::ai::AiPatch> {
+    let tool_call = find_tool_call(response, "resolve_conflicts")
+        .ok_or_else(|| anyhow!("AI response did not include resolve_conflicts tool call"))?;
+    serde_json::from_str(&tool_call.function.arguments)
+        .context("AI response was not valid resolve_conflicts tool arguments")
+}
+
+fn find_tool_call<'a>(
+    response: &'a ChatCompletionResponse,
+    tool_name: &str,
+) -> Option<&'a super::provider::ToolCall> {
+    response.choices.first().and_then(|choice| {
+        choice.message.tool_calls.iter().find(|tool_call| {
+            tool_call.kind == "function" && tool_call.function.name == tool_name
+        })
+    })
 }
 
 fn normalize_commit_plan_arguments(arguments: &mut Value) -> Result<()> {
@@ -101,6 +117,48 @@ pub(super) fn commit_plan_tool_definition() -> Value {
                     "warnings",
                     "auto_executable"
                 ],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+pub(super) fn resolve_conflicts_tool_definition() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": "resolve_conflicts",
+            "description": "Return the full resolved contents for every conflicted file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "confidence": {
+                        "type": "number"
+                    },
+                    "summary": {
+                        "type": "string"
+                    },
+                    "files": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {
+                                    "type": "string"
+                                },
+                                "explanation": {
+                                    "type": "string"
+                                },
+                                "resolved_content": {
+                                    "type": "string"
+                                }
+                            },
+                            "required": ["path", "explanation", "resolved_content"],
+                            "additionalProperties": false
+                        }
+                    }
+                },
+                "required": ["confidence", "summary", "files"],
                 "additionalProperties": false
             }
         }
