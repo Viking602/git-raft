@@ -1,4 +1,5 @@
 use crate::cli::{Cli, CommandKind, CommitLanguageArg};
+use crate::commands::branch::{BranchRun, run_branch};
 use crate::commands::commit::{CommitRun, run_commit};
 use crate::commands::merge_rebase::{MergeRun, run_merge_like};
 use crate::config;
@@ -176,6 +177,15 @@ async fn dispatch_command(
                 cwd.clone(),
                 repo.clone(),
                 store.clone(),
+                emitter,
+            )
+            .await
+        }
+        CommandKind::Branch { name, target } => {
+            run_branch(
+                BranchRun { name, target },
+                cwd.clone(),
+                repo.clone(),
                 emitter,
             )
             .await

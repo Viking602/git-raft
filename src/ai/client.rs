@@ -1,6 +1,6 @@
+use crate::commands::merge_rebase::retention::{ConflictTextFile, preservation_requirements};
 use crate::commit::CommitPlanningInputs;
 use crate::config::CommitConfig;
-use crate::commands::merge_rebase::retention::{ConflictTextFile, preservation_requirements};
 use crate::events::Emitter;
 use crate::git::{GitExec, RepoContext};
 use crate::store::RunStore;
@@ -240,6 +240,21 @@ impl AiClient {
         prompt.push_str("\n- Include every changed file at most once.");
         prompt
             .push_str("\n- Build commit groups and commit messages from the provided preferences.");
+        prompt.push_str(
+            "\n- Commit subjects must explain the actual change or outcome, not the size of the diff.",
+        );
+        prompt.push_str(
+            "\n- Do not use line counts, file counts, or raw diff stats in commit subjects.",
+        );
+        prompt.push_str(
+            "\n- Avoid low-signal subjects such as `add 54 lines of documentation`, `update README`, `misc changes`, or `address feedback`.",
+        );
+        prompt.push_str(
+            "\n- For documentation-only changes, name the topic, command, behavior, or workflow that was documented.",
+        );
+        prompt.push_str(
+            "\n- Prefer specific verbs and nouns that help a reviewer understand the change without opening the diff.",
+        );
         prompt
             .push_str("\n- Decide whether the changes should be a single commit or split commits.");
         prompt.push_str("\n- Only use grouping_decision=\"split\" when grouping_confidence is high and the boundaries are reliable.");

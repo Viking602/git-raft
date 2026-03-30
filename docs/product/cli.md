@@ -6,6 +6,7 @@
   - `--yes`: confirm high-risk operations
 - Current commands:
   - `commit`
+  - `branch`
   - `merge`
   - `rebase`
 
@@ -40,6 +41,12 @@
   - Commit planner ignore rules are configured under `[commit].ignore_paths`
   - Commit body generation is configured under `[commit].include_body`
   - Commit footer generation is configured under `[commit].include_footer`
+
+- `branch` creates and switches to a new branch from a commit-like target.
+  - Usage: `git-raft branch <name> <commit>`
+  - `<commit>` can be a full SHA, unique short SHA, tag, or other commit-resolving ref
+  - runtime resolves the target through `git rev-parse --verify <target>^{commit}` before branch creation
+  - branch creation then runs `git switch -c <name> <resolved-commit>`
 
 - `merge` and `rebase` can request AI conflict resolution.
   - `--apply-ai` defaults to `true`
@@ -82,5 +89,5 @@ args = ["test", "--test", "cli"]
 
 - Removed from the CLI surface:
   - `ask`
-  - passthrough git subcommands such as `status`, `diff`, `add`, `branch`, `switch`, `stash`, and `log`
+  - passthrough git subcommands such as `status`, `diff`, `add`, `switch`, `stash`, and `log`
   - support commands such as `sync`, `init`, `rollback`, `runs`, `trace`, `doctor`, `config`, and `scopes`

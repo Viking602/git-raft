@@ -2,7 +2,8 @@
 
 - Command entry: `src/main.rs` -> `src/lib.rs::run()`
 - Main flow: parse command -> `src/app/dispatch.rs` -> classify risk -> run command workflow -> emit events -> update run metadata
-- The current CLI surface is limited to `commit`, `merge`, and `rebase`
+- The current CLI surface is limited to `commit`, `branch`, `merge`, and `rebase`
+- `branch` workflow lives in `src/commands/branch.rs`
 - `commit` workflow lives in `src/commands/commit/`
 - `merge` and `rebase` workflow lives in `src/commands/merge_rebase.rs`
 - Config resolution order is:

@@ -605,6 +605,44 @@ fn commit_plan_request_omits_local_hint_and_requires_independent_split_groups() 
 }
 
 #[test]
+fn commit_plan_request_prompt_rejects_low_signal_subjects() {
+    let repo = init_repo();
+    fs::write(
+        repo.path().join("README.md"),
+        "# git-raft\n\nUpdated usage.\n",
+    )
+    .expect("write readme");
+
+    let server = MockAiServer::start(vec![ai_commit_plan_response(
+        serde_json::json!([commit_group(
+            Some("readme"),
+            &["README.md"],
+            "docs(readme): document commit planner behavior",
+            "document commit planner behavior",
+        )]),
+        0.92,
+    )]);
+    write_commit_ai_repo_config(repo.path(), server.url(), "", "");
+
+    let output = run_agent_with_env(
+        repo.path(),
+        &["--json", "commit", "--plan"],
+        &[("GIT_RAFT_API_KEY", "test-key")],
+    );
+    assert!(output.status.success(), "commit plan failed: {:?}", output);
+
+    let request = first_ai_provider_request(&server);
+    let system_prompt = request["messages"][0]["content"]
+        .as_str()
+        .expect("system prompt");
+    assert!(system_prompt.contains("add 54 lines of documentation"));
+    assert!(system_prompt.contains("Do not use line counts, file counts, or raw diff stats"));
+    assert!(system_prompt.contains(
+        "For documentation-only changes, name the topic, command, behavior, or workflow"
+    ));
+}
+
+#[test]
 fn commit_plan_accepts_tool_call_response() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");

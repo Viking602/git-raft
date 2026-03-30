@@ -3,6 +3,19 @@ use anyhow::{Result, anyhow};
 use tokio::process::Command;
 
 impl GitExec {
+    pub async fn resolve_commit(&self, target: &str) -> Result<String> {
+        let spec = format!("{target}^{{commit}}");
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", &spec])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Err(anyhow!("failed to resolve commit {target}"));
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
     pub async fn unresolved_conflicts(&self) -> Result<Vec<String>> {
         let output = Command::new("git")
             .args(["diff", "--name-only", "--diff-filter=U"])

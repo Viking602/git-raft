@@ -45,6 +45,15 @@ pub enum CommandKind {
         )]
         args: Vec<String>,
     },
+    /// Create and switch to a new branch from a commit.
+    Branch {
+        /// New branch name.
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Commit, short SHA, or ref to branch from.
+        #[arg(value_name = "COMMIT")]
+        target: String,
+    },
     /// Run git merge and optionally ask AI to resolve conflicts.
     Merge {
         /// Branch, commit, or ref to merge into the current branch.
@@ -100,6 +109,7 @@ impl CommandKind {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Commit { .. } => "commit",
+            Self::Branch { .. } => "branch",
             Self::Merge { .. } => "merge",
             Self::Rebase { .. } => "rebase",
         }

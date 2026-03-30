@@ -12,6 +12,16 @@ fn help_output(args: &[&str]) -> String {
     String::from_utf8(output.stdout).expect("utf8")
 }
 
+fn git_stdout(repo: &std::path::Path, args: &[&str]) -> String {
+    let output = StdCommand::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .expect("run git");
+    assert!(output.status.success(), "git command failed: {:?}", output);
+    String::from_utf8(output.stdout).expect("utf8")
+}
+
 fn init_conflict_repo() -> TempDir {
     let repo = init_repo();
     fs::write(repo.path().join("conflict.txt"), "base\n").expect("write conflict file");
@@ -102,6 +112,7 @@ fn root_help_lists_global_flags_and_agent_commands() {
     assert!(stdout.contains("Emit newline-delimited JSON events"));
     assert!(stdout.contains("Skip confirmation prompts for high-risk operations"));
     assert!(stdout.contains("Ask the AI planner to group changes and create commits"));
+    assert!(stdout.contains("Create and switch to a new branch from a commit"));
     assert!(stdout.contains("Run git merge and optionally ask AI to resolve conflicts"));
     assert!(stdout.contains("Run git rebase and optionally ask AI to resolve conflicts"));
     assert!(!stdout.contains("Send a free-form prompt to the configured AI provider"));
@@ -144,6 +155,14 @@ fn merge_help_lists_target_flag_and_passthrough_args() {
 }
 
 #[test]
+fn branch_help_lists_name_and_commit_arguments() {
+    let stdout = help_output(&["branch", "--help"]);
+    assert!(stdout.contains("Create and switch to a new branch from a commit"));
+    assert!(stdout.contains("New branch name"));
+    assert!(stdout.contains("Commit, short SHA, or ref to branch from"));
+}
+
+#[test]
 fn removed_passthrough_command_is_rejected() {
     let repo = init_repo();
     let output = run_agent(repo.path(), &["status"]);
@@ -166,6 +185,43 @@ fn removed_passthrough_command_is_rejected() {
     let ask_stderr = String::from_utf8(ask_output.stderr).expect("utf8 stderr");
     assert!(ask_stderr.contains("unrecognized subcommand"));
     assert!(ask_stderr.contains("ask"));
+}
+
+#[test]
+fn branch_creates_and_switches_from_short_commit_id() {
+    let repo = init_repo();
+    let target = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    std::fs::write(repo.path().join("hotfix.txt"), "hotfix\n").expect("write hotfix");
+    run_git(repo.path(), ["add", "hotfix.txt"]);
+    run_git(repo.path(), ["commit", "-m", "fix: add hotfix file"]);
+
+    let short_target = target.trim()[..7].to_string();
+    let output = run_agent(repo.path(), &["branch", "hotfix", &short_target]);
+    assert!(output.status.success(), "branch failed: {:?}", output);
+
+    let branch = git_stdout(repo.path(), &["branch", "--show-current"]);
+    assert_eq!(branch.trim(), "hotfix");
+
+    let head = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), target.trim());
+}
+
+#[test]
+fn branch_creates_and_switches_from_full_commit_id() {
+    let repo = init_repo();
+    let target = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    std::fs::write(repo.path().join("main.txt"), "main\n").expect("write main");
+    run_git(repo.path(), ["add", "main.txt"]);
+    run_git(repo.path(), ["commit", "-m", "feat: advance main"]);
+
+    let output = run_agent(repo.path(), &["branch", "release-fix", target.trim()]);
+    assert!(output.status.success(), "branch failed: {:?}", output);
+
+    let branch = git_stdout(repo.path(), &["branch", "--show-current"]);
+    assert_eq!(branch.trim(), "release-fix");
+
+    let head = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    assert_eq!(head.trim(), target.trim());
 }
 
 #[test]
