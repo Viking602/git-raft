@@ -5,6 +5,7 @@ use crate::config::ResolvedConfig;
 use crate::git::GitSnapshot;
 use message::normalize_group_message;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 const AUTO_SPLIT_MIN_CONFIDENCE: f32 = 0.85;
 const DEFAULT_IGNORED_TOOL_DIRS: &[&str] = &[
@@ -54,6 +55,34 @@ pub struct CommitPlanningInputs {
 }
 
 impl CommitPlan {
+    pub fn retain_changed_files(mut self, changed_files: &[String]) -> Self {
+        let allowed = changed_files.iter().cloned().collect::<BTreeSet<_>>();
+        let mut removed = BTreeSet::new();
+
+        self.groups = self
+            .groups
+            .into_iter()
+            .filter_map(|mut group| {
+                group.files = retain_group_files(group.files, &allowed, &mut removed);
+                (!group.files.is_empty()).then_some(group)
+            })
+            .collect();
+
+        self.single_group = self.single_group.take().and_then(|mut group| {
+            group.files = retain_group_files(group.files, &allowed, &mut removed);
+            (!group.files.is_empty()).then_some(group)
+        });
+
+        if !removed.is_empty() {
+            self.warnings.push(format!(
+                "removed files not present in current change set: {}",
+                removed.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+        }
+
+        self
+    }
+
     pub fn normalize_for_execution(mut self, config: &ResolvedConfig) -> Self {
         self.confidence = self.confidence.clamp(0.0, 1.0);
         self.grouping_confidence = self.grouping_confidence.clamp(0.0, 1.0);
@@ -119,6 +148,24 @@ impl CommitPlan {
             rationale: "collapsed split plan into a single commit".to_string(),
         }
     }
+}
+
+fn retain_group_files(
+    files: Vec<String>,
+    allowed: &BTreeSet<String>,
+    removed: &mut BTreeSet<String>,
+) -> Vec<String> {
+    let mut kept = Vec::new();
+    for file in files {
+        if allowed.contains(&file) {
+            kept.push(file);
+        } else {
+            removed.insert(file);
+        }
+    }
+    kept.sort();
+    kept.dedup();
+    kept
 }
 
 pub fn collect_planning_inputs(

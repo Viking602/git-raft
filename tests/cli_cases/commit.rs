@@ -216,6 +216,54 @@ fn commit_executes_even_when_ai_plan_has_low_confidence() {
 }
 
 #[test]
+fn commit_prunes_unknown_paths_but_keeps_deleted_files() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.path().join("src")).expect("mkdir src");
+    fs::write(repo.path().join("src/old.rs"), "pub fn old() {}\n").expect("write old");
+    run_git(repo.path(), ["add", "."]);
+    run_git(repo.path(), ["commit", "-m", "feat(core): add old file"]);
+
+    fs::remove_file(repo.path().join("src/old.rs")).expect("delete old");
+
+    let (_server, output) = run_commit_with_mock_ai(
+        repo.path(),
+        vec![ai_commit_plan_response(
+            serde_json::json!([commit_group(
+                Some("core"),
+                &["src/old.rs", "pkg/middleware/response.go"],
+                "feat(core): remove old file",
+                "keep real deletion and drop unknown path",
+            )]),
+            0.92,
+        )],
+        "",
+        "",
+        &["--json", "commit"],
+    );
+    assert!(output.status.success(), "commit failed: {:?}", output);
+
+    let events = parse_events(&output.stdout);
+    let result = find_tool_result(&events, "commit_plan");
+    let groups = result["data"]["plan"]["groups"]
+        .as_array()
+        .expect("groups array");
+    assert_eq!(groups.len(), 1);
+    let files = groups[0]["files"].as_array().expect("files");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].as_str(), Some("src/old.rs"));
+
+    let show = StdCommand::new("git")
+        .args(["show", "--name-status", "--format=", "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git show");
+    assert!(show.status.success(), "git show failed");
+    let names = String::from_utf8(show.stdout).expect("utf8");
+    assert!(names.contains("D\tsrc/old.rs"));
+    assert!(!names.contains("pkg/middleware/response.go"));
+}
+
+#[test]
 fn commit_collapses_to_single_group_when_split_confidence_is_below_threshold() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");

@@ -75,6 +75,7 @@ pub(crate) async fn run_commit(
         .await?;
     let change_set_fingerprint =
         compute_commit_change_set_fingerprint(&repo_ctx.root_dir, &planning_inputs)?;
+    let changed_files = planning_inputs.changed_files.clone();
     let client = AiClient::from_repo(Some(&repo_ctx))?;
     let mut ai_context_config = client.config().clone();
     ai_context_config.commit_format = resolved_config.commit.format.clone();
@@ -114,7 +115,8 @@ pub(crate) async fn run_commit(
                 Some(json!({ "task": request.task_name(), "cache_key": cache_key })),
             )
             .await?;
-        plan
+        plan.retain_changed_files(&changed_files)
+            .normalize_for_execution(&resolved_config)
     } else {
         run_ai_hook(
             "beforeAiRequest",
@@ -149,6 +151,7 @@ pub(crate) async fn run_commit(
         .await?;
         let plan = exchange
             .into_commit_plan()?
+            .retain_changed_files(&changed_files)
             .normalize_for_execution(&resolved_config);
         store_cached_commit_plan(&repo_ctx.git_dir, &cache_key, &plan)?;
         plan
@@ -207,6 +210,18 @@ pub(crate) async fn run_commit(
 
     if plan_only || dry_run {
         return Ok(());
+    }
+
+    if plan.groups.is_empty() {
+        emitter
+            .emit(
+                "commandFailed",
+                Some("exec"),
+                Some("commit plan does not reference current changes".to_string()),
+                Some(json!({ "blocked": false })),
+            )
+            .await?;
+        return Err(anyhow!("commit plan does not reference current changes"));
     }
 
     for group in &plan.groups {
