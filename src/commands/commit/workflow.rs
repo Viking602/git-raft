@@ -45,8 +45,34 @@ pub(crate) async fn run_commit(
     }
     let repo_ctx = repo.ok_or_else(|| anyhow!("commit requires a git repository"))?;
     let git = GitExec::new(cwd.clone(), Some(repo_ctx.clone()));
-    let snapshot = git.inspect_snapshot().await?;
+    emitter
+        .emit(
+            "phase_changed",
+            Some("scan"),
+            Some("scanning changed files".to_string()),
+            None,
+        )
+        .await?;
+    let snapshot = git
+        .inspect_snapshot_with_heartbeat(emitter, "scan", "still scanning changed files")
+        .await?;
     let planning_inputs = collect_planning_inputs(&snapshot, &resolved_config);
+    emitter
+        .emit(
+            "phase_changed",
+            Some("scan"),
+            Some(format!(
+                "found {} changed files",
+                planning_inputs.changed_files.len()
+            )),
+            Some(json!({
+                "changed_files": planning_inputs.changed_files.len(),
+                "staged_files": planning_inputs.staged_files.len(),
+                "unstaged_files": planning_inputs.unstaged_files.len(),
+                "untracked_files": planning_inputs.untracked_files.len(),
+            })),
+        )
+        .await?;
     let change_set_fingerprint =
         compute_commit_change_set_fingerprint(&repo_ctx.root_dir, &planning_inputs)?;
     let client = AiClient::from_repo(Some(&repo_ctx))?;
@@ -57,6 +83,14 @@ pub(crate) async fn run_commit(
     ai_context_config.commit_include_body = resolved_config.commit.include_body;
     ai_context_config.commit_include_footer = resolved_config.commit.include_footer;
     ai_context_config.commit_ignore_paths = resolved_config.commit.ignore_paths.clone();
+    emitter
+        .emit(
+            "phase_changed",
+            Some("scan"),
+            Some("collecting repository context".to_string()),
+            None,
+        )
+        .await?;
     let repo_context = Some(collect_repo_context(&git, &repo_ctx, &ai_context_config).await);
     let request = client.build_commit_request(
         planning_inputs,

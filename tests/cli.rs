@@ -137,13 +137,20 @@ fn root_help_lists_global_flags_and_agent_commands() {
 #[test]
 fn commit_help_lists_planner_flags_and_language_values() {
     let stdout = help_output(&["commit", "--help"]);
+    assert!(stdout.contains("Usage: git-raft commit [OPTIONS] [ARGS]..."));
+    assert!(stdout.contains("--json"));
     assert!(stdout.contains("Print the planned commit groups without creating commits"));
     assert!(stdout.contains("Preview the planned commit execution without creating commits"));
+    assert!(stdout.contains("--yes"));
     assert!(stdout.contains("Extra guidance passed to the AI commit planner"));
     assert!(stdout.contains("Override the configured commit subject language for this run"));
+    assert!(stdout.contains("--lang <LANGUAGE>"));
+    assert!(!stdout.contains("--language"));
     assert!(stdout.contains("currently ignored by the commit planner"));
+    assert!(stdout.contains("Possible values:"));
     assert!(stdout.contains("Generate commit subjects in English"));
     assert!(stdout.contains("Generate commit subjects in Chinese"));
+    assert!(stdout.contains("-h, --help"));
 }
 
 #[test]
@@ -572,10 +579,15 @@ fn conflict_request_prompt_requires_verbatim_unique_content_retention() {
         "{request}"
     );
     assert!(
-        request.contains("Do not change function names or call expressions inside required test blocks"),
+        request.contains(
+            "Do not change function names or call expressions inside required test blocks"
+        ),
         "{request}"
     );
-    assert!(request.contains("\"preservation_requirements\""), "{request}");
+    assert!(
+        request.contains("\"preservation_requirements\""),
+        "{request}"
+    );
     assert!(request.contains("\"line\": \"main\""), "{request}");
     assert!(request.contains("\"line\": \"feature\""), "{request}");
 }

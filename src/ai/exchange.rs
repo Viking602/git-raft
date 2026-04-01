@@ -1,8 +1,8 @@
+use super::request::{AgentRequest, AgentTask};
 use crate::commit::CommitPlan;
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use super::request::{AgentRequest, AgentTask};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiPatch {

@@ -346,6 +346,67 @@ fn commit_plan_requests_ai_when_provider_is_configured() {
     assert_eq!(request["task"], "plan_commit");
 }
 
+#[cfg(unix)]
+#[test]
+fn commit_plan_reports_scan_progress_before_ai_request() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
+    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login() {}\n").expect("write auth");
+    let server = MockAiServer::start(vec![ai_commit_plan_response(
+        serde_json::json!([commit_group(
+            Some("auth"),
+            &["src/auth/mod.rs"],
+            "feat(auth): add auth login",
+            "group auth file",
+        )]),
+        0.92,
+    )]);
+    write_commit_ai_repo_config(repo.path(), server.url(), "", "");
+
+    let path = path_with_slow_git_status(repo.path(), 1100);
+    let output = run_agent_with_env(
+        repo.path(),
+        &["--json", "commit", "--plan"],
+        &[("GIT_RAFT_API_KEY", "test-key"), ("PATH", &path)],
+    );
+
+    let events = parse_events(&output.stdout);
+    assert!(
+        events.iter().any(|event| {
+            event["event_type"] == "phase_changed"
+                && event["phase"] == "scan"
+                && event["message"] == "scanning changed files"
+        }),
+        "expected scan phase event: {:?}",
+        events
+    );
+    assert!(
+        events.iter().any(|event| {
+            event["event_type"] == "heartbeat"
+                && event["phase"] == "scan"
+                && event["message"] == "still scanning changed files"
+        }),
+        "expected scan heartbeat event: {:?}",
+        events
+    );
+    let ai_index = events
+        .iter()
+        .position(|event| event["event_type"] == "ai_request_started")
+        .expect("ai request started event");
+    let scan_index = events
+        .iter()
+        .position(|event| {
+            event["event_type"] == "phase_changed"
+                && event["phase"] == "scan"
+                && event["message"] == "scanning changed files"
+        })
+        .expect("scan phase index");
+    assert!(
+        scan_index < ai_index,
+        "scan progress should happen before AI request"
+    );
+}
+
 #[test]
 fn commit_plan_request_uses_plan_commit_tool() {
     let repo = init_repo();
@@ -1153,7 +1214,7 @@ fn commit_language_flag_overrides_config_language() {
         )],
         "language = \"en\"",
         "",
-        &["--json", "commit", "--plan", "--language", "zh"],
+        &["--json", "commit", "--plan", "--lang", "zh"],
     );
     assert!(output.status.success(), "commit plan failed: {:?}", output);
     let events = parse_events(&output.stdout);

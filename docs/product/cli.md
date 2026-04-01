@@ -26,7 +26,7 @@
   - `commit --plan` requests the AI planner and prints a non-mutating plan
   - `commit --dry-run` requests the AI planner and previews the result without creating commits
   - `commit --intent <text>` is passed to the AI planner as extra guidance
-  - `commit --language <en|zh>` overrides the configured commit subject language for one run
+  - `commit --lang <en|zh>` overrides the configured commit subject language for one run
   - staged and unstaged changes are planned together by default
   - `commit` requires a configured AI provider because grouping and commit messages are AI-generated
   - The AI must explicitly decide whether the change should stay as one commit or be split

@@ -31,9 +31,11 @@ fn find_tool_call<'a>(
     tool_name: &str,
 ) -> Option<&'a super::provider::ToolCall> {
     response.choices.first().and_then(|choice| {
-        choice.message.tool_calls.iter().find(|tool_call| {
-            tool_call.kind == "function" && tool_call.function.name == tool_name
-        })
+        choice
+            .message
+            .tool_calls
+            .iter()
+            .find(|tool_call| tool_call.kind == "function" && tool_call.function.name == tool_name)
     })
 }
 

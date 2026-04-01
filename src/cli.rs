@@ -35,8 +35,8 @@ pub enum CommandKind {
         #[arg(long)]
         intent: Option<String>,
         /// Override the configured commit subject language for this run.
-        #[arg(long, value_enum)]
-        language: Option<CommitLanguageArg>,
+        #[arg(long = "lang", value_enum, value_name = "LANGUAGE")]
+        lang: Option<CommitLanguageArg>,
         /// Accepted after -- for compatibility; currently ignored by the commit planner.
         #[arg(
             allow_hyphen_values = true,

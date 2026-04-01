@@ -72,7 +72,6 @@ impl GitExec {
             .map(str::to_string)
             .collect())
     }
-
     pub async fn stage_files(&self, files: &[String]) -> Result<()> {
         if files.is_empty() {
             return Ok(());

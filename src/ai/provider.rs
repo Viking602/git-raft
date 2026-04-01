@@ -8,9 +8,7 @@ use std::pin::Pin;
 use crate::events::Emitter;
 
 use super::AiConfig;
-use super::commit_plan_tool::{
-    extract_commit_plan_tool_args, extract_resolve_conflicts_tool_args,
-};
+use super::commit_plan_tool::{extract_commit_plan_tool_args, extract_resolve_conflicts_tool_args};
 use super::config::resolve_api_key;
 use super::exchange::{AgentResponse, ProviderExchange};
 use super::request::{AgentRequest, AgentTask};
@@ -82,8 +80,10 @@ impl AiProvider for OpenAiCompatProvider {
                 .and_then(|value| value.to_str().ok())
                 .unwrap_or_default()
                 .to_string();
-            if matches!(request.task, AgentTask::PlanCommit | AgentTask::ResolveConflicts)
-                && content_type.contains("text/event-stream")
+            if matches!(
+                request.task,
+                AgentTask::PlanCommit | AgentTask::ResolveConflicts
+            ) && content_type.contains("text/event-stream")
             {
                 return Err(anyhow!(
                     "provider does not support tool calls for this task"

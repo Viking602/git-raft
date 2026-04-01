@@ -162,7 +162,7 @@ async fn dispatch_command(
             plan,
             dry_run,
             intent,
-            language,
+            lang,
             args,
         } => {
             run_commit(
@@ -170,7 +170,7 @@ async fn dispatch_command(
                     plan_only: plan,
                     dry_run,
                     intent,
-                    language: language.map(CommitLanguageArg::as_str).map(str::to_string),
+                    language: lang.map(CommitLanguageArg::as_str).map(str::to_string),
                     args,
                     resolved_config: resolved_config.clone(),
                 },

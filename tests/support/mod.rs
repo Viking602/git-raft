@@ -70,6 +70,40 @@ pub(crate) fn run_agent_with_env(
     command.output().expect("run git-raft with env")
 }
 
+#[cfg(unix)]
+pub(crate) fn path_with_slow_git_status(repo: &Path, delay_ms: u64) -> String {
+    let output = StdCommand::new("sh")
+        .args(["-lc", "command -v git"])
+        .output()
+        .expect("locate git");
+    assert!(output.status.success(), "failed to locate git");
+    let git_path = String::from_utf8(output.stdout)
+        .expect("git path utf8")
+        .trim()
+        .to_string();
+
+    let bin_dir = repo.join(".test-bin");
+    fs::create_dir_all(&bin_dir).expect("create test bin dir");
+    let script_path = bin_dir.join("git");
+    fs::write(
+        &script_path,
+        format!(
+            "#!/bin/sh\nif [ \"$1\" = \"status\" ]; then\n  sleep {}\nfi\nexec \"{}\" \"$@\"\n",
+            delay_ms as f64 / 1000.0,
+            git_path
+        ),
+    )
+    .expect("write slow git wrapper");
+    let metadata = fs::metadata(&script_path).expect("slow git metadata");
+    let mut permissions = metadata.permissions();
+    use std::os::unix::fs::PermissionsExt;
+    permissions.set_mode(0o755);
+    fs::set_permissions(&script_path, permissions).expect("chmod slow git wrapper");
+
+    let current_path = std::env::var("PATH").expect("PATH");
+    format!("{}:{}", bin_dir.display(), current_path)
+}
+
 pub(crate) struct HookCommand {
     pub program: String,
     pub args: Vec<String>,
@@ -241,7 +275,7 @@ impl MockAiServer {
         let handle = thread::spawn(move || {
             let started = Instant::now();
             let mut sent = 0usize;
-            while started.elapsed() < Duration::from_secs(5) {
+            while started.elapsed() < Duration::from_secs(15) {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream.set_nonblocking(false).expect("set blocking stream");
