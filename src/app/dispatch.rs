@@ -1,4 +1,5 @@
 use crate::cli::{Cli, CommandKind, CommitLanguageArg};
+use crate::commands::author::{AuthorRun, run_author};
 use crate::commands::branch::{BranchRun, run_branch};
 use crate::commands::commit::{CommitRun, run_commit};
 use crate::commands::merge_rebase::{MergeRun, run_merge_like};
@@ -226,6 +227,25 @@ async fn dispatch_command(
                 cwd.clone(),
                 repo.clone(),
                 store.clone(),
+                emitter,
+            )
+            .await
+        }
+        CommandKind::Author {
+            name,
+            email,
+            force,
+            push,
+        } => {
+            run_author(
+                AuthorRun {
+                    name,
+                    email,
+                    force,
+                    push,
+                },
+                cwd.clone(),
+                repo.clone(),
                 emitter,
             )
             .await
