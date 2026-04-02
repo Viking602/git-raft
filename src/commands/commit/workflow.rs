@@ -16,6 +16,23 @@ use super::cache::{
 };
 use super::render::render_commit_plan_summary;
 
+fn stage_targets(snapshot: &git::GitSnapshot, cwd: &PathBuf, files: &[String]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|file| !is_already_staged_deletion(snapshot, cwd, file))
+        .cloned()
+        .collect()
+}
+
+fn is_already_staged_deletion(snapshot: &git::GitSnapshot, cwd: &PathBuf, file: &str) -> bool {
+    snapshot.staged_files.iter().any(|staged| staged == file)
+        && !snapshot
+            .unstaged_files
+            .iter()
+            .any(|unstaged| unstaged == file)
+        && !cwd.join(file).exists()
+}
+
 pub(crate) struct CommitRun {
     pub(crate) plan_only: bool,
     pub(crate) dry_run: bool,
@@ -93,6 +110,14 @@ pub(crate) async fn run_commit(
         )
         .await?;
     let repo_context = Some(collect_repo_context(&git, &repo_ctx, &ai_context_config).await);
+    emitter
+        .emit(
+            "phase_changed",
+            Some("scan"),
+            Some("analyzing diff content for commit message".to_string()),
+            None,
+        )
+        .await?;
     let request = client.build_commit_request(
         planning_inputs,
         intent.clone(),
@@ -262,7 +287,8 @@ pub(crate) async fn run_commit(
             .as_deref()
             .unwrap_or(&group.commit_message)
             .to_string();
-        git.stage_files(&group.files).await?;
+        let files_to_stage = stage_targets(&snapshot, &cwd, &group.files);
+        git.stage_files(&files_to_stage).await?;
         git.create_commit(&message).await?;
         let after_snapshot = git.inspect_snapshot().await?;
         let _ = run_hooks(HookContext {

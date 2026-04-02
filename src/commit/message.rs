@@ -2,13 +2,14 @@ use crate::commit::CommitGroup;
 use crate::config::ResolvedConfig;
 
 pub(super) fn normalize_group_message(group: CommitGroup, config: &ResolvedConfig) -> CommitGroup {
-    let summary_hint = extract_summary_hint(&group.commit_message);
+    let (summary_hint, body) = extract_summary_and_body(&group.commit_message);
     let commit_message = format_message(
         config,
         group.scope.as_deref(),
         &group.files,
         &group.rationale,
         summary_hint.as_deref(),
+        body.as_deref(),
     );
     CommitGroup {
         commit_message,
@@ -16,18 +17,28 @@ pub(super) fn normalize_group_message(group: CommitGroup, config: &ResolvedConfi
     }
 }
 
-fn extract_summary_hint(message: &str) -> Option<String> {
-    let subject = message.lines().next()?.trim();
-    if subject.is_empty() {
-        return None;
-    }
-    if let Some((_, summary)) = subject.split_once(": ") {
-        return Some(summary.trim().to_string());
-    }
-    if let Some((_, summary)) = subject.split_once(' ') {
-        return Some(summary.trim().to_string());
-    }
-    Some(subject.to_string())
+/// Extract the subject summary and optional body from a commit message.
+/// The body is everything after the first blank line.
+fn extract_summary_and_body(message: &str) -> (Option<String>, Option<String>) {
+    let subject = message.lines().next().unwrap_or("").trim();
+    let summary = if subject.is_empty() {
+        None
+    } else if let Some((_, s)) = subject.split_once(": ") {
+        Some(s.trim().to_string())
+    } else if let Some((_, s)) = subject.split_once(' ') {
+        Some(s.trim().to_string())
+    } else {
+        Some(subject.to_string())
+    };
+
+    // Extract body: everything after the first blank line
+    let body = message
+        .splitn(2, "\n\n")
+        .nth(1)
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+
+    (summary, body)
 }
 
 fn format_message(
@@ -36,6 +47,7 @@ fn format_message(
     files: &[String],
     rationale: &str,
     intent: Option<&str>,
+    body: Option<&str>,
 ) -> String {
     let language = normalized_commit_language(&config.commit.language);
     let summary = intent
@@ -51,7 +63,7 @@ fn format_message(
             format!("{} {}", emoji_for_type(&commit_type), summary),
             files,
             rationale,
-            language,
+            body,
         );
     }
     match config.commit.format.as_str() {
@@ -62,7 +74,7 @@ fn format_message(
             } else {
                 format!("{commit_type}: {summary}")
             };
-            format_full_message(config, subject, files, rationale, language)
+            format_full_message(config, subject, files, rationale, body)
         }
         _ => {
             let subject = if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
@@ -70,7 +82,7 @@ fn format_message(
             } else {
                 format!("{commit_type}: {summary}")
             };
-            format_full_message(config, subject, files, rationale, language)
+            format_full_message(config, subject, files, rationale, body)
         }
     }
 }
@@ -80,9 +92,16 @@ fn format_full_message(
     subject: String,
     files: &[String],
     _rationale: &str,
-    _language: &str,
+    body: Option<&str>,
 ) -> String {
     let mut message = subject;
+    // Include body with change details if present
+    if config.commit.include_body {
+        if let Some(body_text) = body {
+            message.push_str("\n\n");
+            message.push_str(body_text);
+        }
+    }
     if config.commit.include_footer && !files.is_empty() && config.commit.format != "simple" {
         message.push_str("\n\n");
         message.push_str(&build_footer(files));
