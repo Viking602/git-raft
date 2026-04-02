@@ -58,6 +58,95 @@ impl GitExec {
             diff_stats: stats.into_values().collect(),
         })
     }
+
+    /// Collect per-file diff content for tracked files and file previews for untracked files.
+    /// Each file's content is truncated to `per_file_limit` bytes, and the total budget is
+    /// `total_limit` bytes. Returns the number of files that were truncated or skipped.
+    pub async fn collect_diff_contents(
+        &self,
+        diff_stats: &mut Vec<DiffStat>,
+        untracked_files: &[String],
+        per_file_limit: usize,
+        total_limit: usize,
+    ) -> Result<usize> {
+        let mut total_bytes = 0usize;
+        let mut truncated_count = 0usize;
+
+        // Collect diffs for tracked files (staged + unstaged)
+        for stat in diff_stats.iter_mut() {
+            if total_bytes >= total_limit {
+                truncated_count += 1;
+                continue;
+            }
+            let output = self
+                .capture(["diff", "--unified=3", "--", stat.path.as_str()])
+                .await;
+            let content = match output {
+                Ok(o) if !o.stdout.is_empty() => o.stdout,
+                _ => {
+                    // Try staged diff
+                    match self
+                        .capture(["diff", "--cached", "--unified=3", "--", stat.path.as_str()])
+                        .await
+                    {
+                        Ok(o) if !o.stdout.is_empty() => o.stdout,
+                        _ => continue,
+                    }
+                }
+            };
+            let remaining = total_limit.saturating_sub(total_bytes);
+            let limit = per_file_limit.min(remaining);
+            if content.len() > limit {
+                stat.diff_content = Some(format!(
+                    "{}\n... [truncated, {} more bytes]",
+                    &content[..limit],
+                    content.len() - limit,
+                ));
+                truncated_count += 1;
+            } else {
+                stat.diff_content = Some(content.clone());
+            }
+            total_bytes += stat.diff_content.as_ref().map_or(0, |c| c.len());
+        }
+
+        // Collect previews for untracked (new) files
+        for path in untracked_files {
+            if total_bytes >= total_limit {
+                truncated_count += 1;
+                continue;
+            }
+            let full_path = self.cwd.join(path);
+            let content = match tokio::fs::read_to_string(&full_path).await {
+                Ok(c) => c,
+                Err(_) => continue, // skip binary or unreadable files
+            };
+            if content.is_empty() {
+                continue;
+            }
+            let remaining = total_limit.saturating_sub(total_bytes);
+            let limit = per_file_limit.min(remaining);
+            let preview = if content.len() > limit {
+                truncated_count += 1;
+                format!(
+                    "+++ new file: {path}\n{}\n... [truncated, {} more bytes]",
+                    &content[..limit],
+                    content.len() - limit,
+                )
+            } else {
+                format!("+++ new file: {path}\n{content}")
+            };
+            // Append as a DiffStat entry for untracked files
+            diff_stats.push(DiffStat {
+                path: path.clone(),
+                additions: content.lines().count(),
+                deletions: 0,
+                diff_content: Some(preview.clone()),
+            });
+            total_bytes += preview.len();
+        }
+
+        Ok(truncated_count)
+    }
 }
 
 impl GitSnapshot {
