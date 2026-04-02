@@ -424,11 +424,8 @@ mod tests {
                 .iter()
                 .any(|line| line.side == "theirs" && line.line == "other")
         );
-        assert!(
-            result.required_unique_blocks.iter().any(|block| {
-                block.side == "ours"
-                    && block.lines == vec!["keep_a", "keep_b", "keep_c"]
-            })
-        );
+        assert!(result.required_unique_blocks.iter().any(|block| {
+            block.side == "ours" && block.lines == vec!["keep_a", "keep_b", "keep_c"]
+        }));
     }
 }

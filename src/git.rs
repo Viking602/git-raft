@@ -37,6 +37,8 @@ pub struct DiffStat {
     pub path: String,
     pub additions: usize,
     pub deletions: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diff_content: Option<String>,
 }
 
 pub(super) enum StreamKind {

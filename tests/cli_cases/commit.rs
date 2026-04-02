@@ -264,6 +264,50 @@ fn commit_prunes_unknown_paths_but_keeps_deleted_files() {
 }
 
 #[test]
+fn commit_keeps_staged_deletions_without_readding_them() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.path().join("src")).expect("mkdir src");
+    fs::write(repo.path().join("src/old.rs"), "pub fn old() {}\n").expect("write old");
+    fs::write(repo.path().join("src/new.rs"), "pub fn new_fn() {}\n").expect("write new");
+    run_git(repo.path(), ["add", "."]);
+    run_git(repo.path(), ["commit", "-m", "feat(core): add files"]);
+
+    run_git(repo.path(), ["rm", "src/old.rs"]);
+    fs::write(
+        repo.path().join("src/new.rs"),
+        "pub fn new_fn() { println!(\"x\"); }\n",
+    )
+    .expect("update new");
+
+    let (_server, output) = run_commit_with_mock_ai(
+        repo.path(),
+        vec![ai_commit_plan_response(
+            serde_json::json!([commit_group(
+                Some("core"),
+                &["src/old.rs", "src/new.rs"],
+                "feat(core): replace old file",
+                "keep staged deletion and stage new change",
+            )]),
+            0.92,
+        )],
+        "",
+        "",
+        &["--json", "commit"],
+    );
+    assert!(output.status.success(), "commit failed: {:?}", output);
+
+    let show = StdCommand::new("git")
+        .args(["show", "--name-status", "--format=", "HEAD"])
+        .current_dir(repo.path())
+        .output()
+        .expect("git show");
+    assert!(show.status.success(), "git show failed");
+    let names = String::from_utf8(show.stdout).expect("utf8");
+    assert!(names.contains("D\tsrc/old.rs"));
+    assert!(names.contains("M\tsrc/new.rs"));
+}
+
+#[test]
 fn commit_collapses_to_single_group_when_split_confidence_is_below_threshold() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
@@ -484,9 +528,9 @@ fn commit_plan_request_uses_plan_commit_tool() {
     assert_eq!(request["tools"][0]["type"], "function");
     assert_eq!(request["tools"][0]["function"]["name"], "plan_commit");
     assert_eq!(request["temperature"], 0.0);
-    assert!(
-        request.get("stream").is_none(),
-        "tool-based commit planning should not force text streaming"
+    assert_eq!(
+        request["stream"], true,
+        "commit planning should enable SSE streaming"
     );
 }
 
@@ -1088,6 +1132,55 @@ fn commit_plan_ignores_default_agent_tool_dirs() {
         .map(|file| file.as_str().expect("file").to_string())
         .collect::<Vec<_>>();
     assert_eq!(changed_files, vec!["docs/guide.md".to_string()]);
+}
+
+#[test]
+fn commit_plan_keeps_non_tool_dot_directories() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.path().join(".github/workflows")).expect("mkdir workflows");
+    fs::write(
+        repo.path().join(".github/workflows/ci.yml"),
+        "name: ci\non: [push]\n",
+    )
+    .expect("write workflow");
+
+    let (server, output) = run_commit_with_mock_ai(
+        repo.path(),
+        vec![ai_commit_plan_response(
+            serde_json::json!([commit_group(
+                Some("ci"),
+                &[".github/workflows/ci.yml"],
+                "ci: add workflow",
+                "group workflow file",
+            )]),
+            0.92,
+        )],
+        "",
+        "",
+        &["--json", "commit", "--plan"],
+    );
+    assert!(output.status.success(), "commit plan failed: {:?}", output);
+    let events = parse_events(&output.stdout);
+    let result = find_tool_result(&events, "commit_plan");
+    let groups = result["data"]["plan"]["groups"]
+        .as_array()
+        .expect("groups array");
+    assert_eq!(groups.len(), 1);
+    let files = groups[0]["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|file| file.as_str().expect("file").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(files, vec![".github/workflows/ci.yml".to_string()]);
+    let request = first_ai_user_request(&server);
+    let changed_files = request["user_payload"]["changed_files"]
+        .as_array()
+        .expect("changed files")
+        .iter()
+        .map(|file| file.as_str().expect("file").to_string())
+        .collect::<Vec<_>>();
+    assert_eq!(changed_files, vec![".github/workflows/ci.yml".to_string()]);
 }
 
 #[test]

@@ -216,6 +216,7 @@ impl GitExec {
                 path,
                 additions: 0,
                 deletions: 0,
+                diff_content: None,
             });
             entry.additions += additions;
             entry.deletions += deletions;
@@ -246,6 +247,7 @@ impl GitExec {
                 path,
                 additions: 0,
                 deletions: 0,
+                diff_content: None,
             });
             entry.additions += additions;
             entry.deletions += deletions;

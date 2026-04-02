@@ -25,6 +25,9 @@ pub fn classify(command: &CommandKind) -> RiskDecision {
     match command {
         CommandKind::Merge { .. } => high("merge changes branch history and may apply AI edits"),
         CommandKind::Rebase { .. } => high("rebase rewrites history and may apply AI edits"),
+        CommandKind::Author { force, push, .. } if *force && *push => {
+            high("author rewrite with force push rewrites history and pushes to remote")
+        }
         _ => low("command is safe enough to run without extra confirmation"),
     }
 }

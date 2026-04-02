@@ -115,6 +115,7 @@ fn root_help_lists_global_flags_and_agent_commands() {
     assert!(stdout.contains("Create and switch to a new branch from a commit"));
     assert!(stdout.contains("Run git merge and optionally ask AI to resolve conflicts"));
     assert!(stdout.contains("Run git rebase and optionally ask AI to resolve conflicts"));
+    assert!(stdout.contains("Set project-level commit author"));
     assert!(!stdout.contains("Send a free-form prompt to the configured AI provider"));
 
     assert!(!stdout.contains("Pass arguments through to git status"));
@@ -264,6 +265,9 @@ fn before_command_hook_receives_camel_case_payload_for_agent_command() {
 
 #[path = "cli_cases/commit.rs"]
 mod commit_cases;
+
+#[path = "cli_cases/author.rs"]
+mod author_cases;
 
 #[test]
 fn before_ai_request_hook_can_block_request() {

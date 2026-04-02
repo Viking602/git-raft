@@ -2,6 +2,7 @@ mod client;
 mod commit_plan_tool;
 mod config;
 mod context;
+mod diff_summary;
 mod exchange;
 mod provider;
 mod request;

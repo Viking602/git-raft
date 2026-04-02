@@ -86,6 +86,21 @@ pub enum CommandKind {
         )]
         args: Vec<String>,
     },
+    /// Set project-level commit author and rewrite recent commits with wrong author.
+    Author {
+        /// Author name for this project.
+        #[arg(long)]
+        name: String,
+        /// Author email for this project.
+        #[arg(long)]
+        email: String,
+        /// Allow rewriting commits that have already been pushed to the remote.
+        #[arg(long)]
+        force: bool,
+        /// Force push to remote after rewriting (requires --force).
+        #[arg(long)]
+        push: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -112,6 +127,7 @@ impl CommandKind {
             Self::Branch { .. } => "branch",
             Self::Merge { .. } => "merge",
             Self::Rebase { .. } => "rebase",
+            Self::Author { .. } => "author",
         }
     }
 }

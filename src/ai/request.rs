@@ -29,6 +29,8 @@ pub(crate) struct RepoContextPayload {
     pub branch: Option<String>,
     pub git_snapshot: GitSnapshot,
     pub diff_stats: Vec<DiffStat>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub change_summary: String,
     pub recent_subjects: Vec<String>,
     pub commit_format: String,
     pub commit_language: String,
