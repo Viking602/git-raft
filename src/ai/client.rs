@@ -24,7 +24,8 @@ impl AiClient {
         }
         let _api_key = resolve_api_key(&config)?;
         let http = Client::builder()
-            .timeout(Duration::from_secs(120))
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(300))
             .build()
             .context("failed to build http client")?;
         Ok(Self {
@@ -241,7 +242,21 @@ impl AiClient {
         prompt
             .push_str("\n- Build commit groups and commit messages from the provided preferences.");
         prompt.push_str(
+            "\n- Read the `change_summary` field in repo_context carefully. It contains a structured summary of code changes: added/removed symbols, modified sections. Use it to write accurate commit messages.",
+        );
+        prompt.push_str(
             "\n- Commit subjects must explain the actual change or outcome, not the size of the diff.",
+        );
+        prompt.push_str(
+            "\n- The commit_message MUST include a body (after a blank line following the subject). The body MUST list the key changes extracted from change_summary, for example:",
+        );
+        prompt.push_str(
+            "\n  - Add `collect_diff_contents()` to GitExec for per-file diff collection",
+        );
+        prompt.push_str("\n  - New `DiffStat.diff_content` field to carry raw diff text");
+        prompt.push_str("\n  - Update system prompt to reference change_summary");
+        prompt.push_str(
+            "\n  The body should contain 2-6 bullet points describing what was added, changed, or removed. Do NOT just list file paths.",
         );
         prompt.push_str(
             "\n- Do not use line counts, file counts, or raw diff stats in commit subjects.",
@@ -262,7 +277,7 @@ impl AiClient {
         prompt.push_str("\n- Do not separate changes into different groups when one group depends on uncommitted changes from another group.");
         prompt.push_str("\n- If you cannot keep every split commit independently runnable, return a single commit plan instead.");
         prompt.push_str("\n- Always return single_group as a valid one-commit fallback for the entire change set.");
-        prompt.push_str("\n- Keep rationale short and specific.");
+        prompt.push_str("\n- Keep rationale short and specific. Describe the functional change or purpose, not a list of files.");
         prompt.push_str("\n- Lower confidence if grouping is ambiguous.");
         if !self.config.commit_examples.is_empty() {
             prompt.push_str("\nRepository commit examples:\n");
