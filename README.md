@@ -87,6 +87,22 @@ git-raft rebase main
 git-raft branch my-feature abc1234
 ```
 
+### Purge
+
+```bash
+# Remove a file from working tree and entire git history
+git-raft purge secret.env
+
+# Remove multiple paths
+git-raft purge .env credentials.json build/
+
+# Allow rewriting already-pushed commits
+git-raft purge secret.env --force
+
+# Rewrite and force push (requires --yes confirmation)
+git-raft purge secret.env --force --push --yes
+```
+
 ### Author
 
 ```bash

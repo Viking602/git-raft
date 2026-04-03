@@ -86,6 +86,18 @@ pub enum CommandKind {
         )]
         args: Vec<String>,
     },
+    /// Remove files from the branch and rewrite history to erase them completely.
+    Purge {
+        /// File or directory paths to remove from the branch and its entire history.
+        #[arg(required = true, num_args = 1.., value_name = "PATHS")]
+        paths: Vec<String>,
+        /// Allow rewriting commits that have already been pushed to the remote.
+        #[arg(long)]
+        force: bool,
+        /// Force push to remote after rewriting (requires --force).
+        #[arg(long)]
+        push: bool,
+    },
     /// Set project-level commit author and rewrite recent commits with wrong author.
     Author {
         /// Author name for this project.
@@ -127,6 +139,7 @@ impl CommandKind {
             Self::Branch { .. } => "branch",
             Self::Merge { .. } => "merge",
             Self::Rebase { .. } => "rebase",
+            Self::Purge { .. } => "purge",
             Self::Author { .. } => "author",
         }
     }

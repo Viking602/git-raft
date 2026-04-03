@@ -116,6 +116,7 @@ fn root_help_lists_global_flags_and_agent_commands() {
     assert!(stdout.contains("Run git merge and optionally ask AI to resolve conflicts"));
     assert!(stdout.contains("Run git rebase and optionally ask AI to resolve conflicts"));
     assert!(stdout.contains("Set project-level commit author"));
+    assert!(stdout.contains("Remove files from the branch and rewrite history to erase them"));
     assert!(!stdout.contains("Send a free-form prompt to the configured AI provider"));
 
     assert!(!stdout.contains("Pass arguments through to git status"));
@@ -268,6 +269,9 @@ mod commit_cases;
 
 #[path = "cli_cases/author.rs"]
 mod author_cases;
+
+#[path = "cli_cases/purge.rs"]
+mod purge_cases;
 
 #[test]
 fn before_ai_request_hook_can_block_request() {

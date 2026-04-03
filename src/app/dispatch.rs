@@ -3,6 +3,7 @@ use crate::commands::author::{AuthorRun, run_author};
 use crate::commands::branch::{BranchRun, run_branch};
 use crate::commands::commit::{CommitRun, run_commit};
 use crate::commands::merge_rebase::{MergeRun, run_merge_like};
+use crate::commands::purge::{PurgeRun, run_purge};
 use crate::config;
 use crate::events::Emitter;
 use crate::git::{self, GitExec};
@@ -227,6 +228,15 @@ async fn dispatch_command(
                 cwd.clone(),
                 repo.clone(),
                 store.clone(),
+                emitter,
+            )
+            .await
+        }
+        CommandKind::Purge { paths, force, push } => {
+            run_purge(
+                PurgeRun { paths, force, push },
+                cwd.clone(),
+                repo.clone(),
                 emitter,
             )
             .await

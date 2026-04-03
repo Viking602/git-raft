@@ -2,6 +2,25 @@ use super::GitExec;
 use anyhow::{Result, anyhow};
 use tokio::process::Command;
 
+fn shell_escape(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+async fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            Box::pin(copy_dir_recursive(&src_path, &dst_path)).await?;
+        } else {
+            tokio::fs::copy(&src_path, &dst_path).await?;
+        }
+    }
+    Ok(())
+}
+
 impl GitExec {
     async fn config_value(&self, scope: &str, key: &str) -> Result<Option<String>> {
         let output = Command::new("git")
@@ -217,6 +236,196 @@ impl GitExec {
             return Err(anyhow!("author rewrite failed: {stderr}"));
         }
         Ok(())
+    }
+
+    pub async fn path_exists_in_history(&self, path: &str) -> Result<bool> {
+        let output = Command::new("git")
+            .args([
+                "log",
+                "--all",
+                "--pretty=format:",
+                "--name-only",
+                "--",
+                path,
+            ])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let text = String::from_utf8(output.stdout)?;
+        Ok(!text.trim().is_empty())
+    }
+
+    pub async fn has_pushed_commits(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        if !output.status.success() {
+            return Ok(false);
+        }
+        let branch = String::from_utf8(output.stdout)?.trim().to_string();
+        let remote_ref = format!("origin/{branch}");
+        let check = Command::new("git")
+            .args(["rev-parse", "--verify", &remote_ref])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        Ok(check.status.success())
+    }
+
+    pub async fn purge_paths(&self, paths: &[String]) -> Result<()> {
+        // Back up files/dirs that exist on disk so we can restore them after rewrite
+        let backup_dir = self.cwd.join(".git/git-raft-purge-backup");
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+        for path in paths {
+            let src = self.cwd.join(path);
+            let dst = backup_dir.join(path);
+            if src.exists() {
+                if let Some(parent) = dst.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                if src.is_dir() {
+                    copy_dir_recursive(&src, &dst).await?;
+                } else {
+                    tokio::fs::copy(&src, &dst).await?;
+                }
+            }
+        }
+
+        // Stash any uncommitted changes so filter-branch can run on a clean tree
+        let stashed = self.stash_if_dirty().await?;
+
+        let rm_paths = paths
+            .iter()
+            .map(|p| shell_escape(p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let index_filter = format!("git rm -rf --cached --ignore-unmatch {rm_paths}");
+
+        let result = Command::new("git")
+            .args([
+                "filter-branch",
+                "--force",
+                "--index-filter",
+                &index_filter,
+                "--prune-empty",
+                "--",
+                "HEAD",
+            ])
+            .env("FILTER_BRANCH_SQUELCH_WARNING", "1")
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+
+        // Restore stashed changes before checking for errors
+        if stashed {
+            let _ = self.stash_pop().await;
+        }
+
+        // Restore backed-up files to disk
+        for path in paths {
+            let src = backup_dir.join(path);
+            let dst = self.cwd.join(path);
+            if src.exists() {
+                if let Some(parent) = dst.parent() {
+                    tokio::fs::create_dir_all(parent).await?;
+                }
+                if src.is_dir() {
+                    copy_dir_recursive(&src, &dst).await?;
+                } else {
+                    tokio::fs::copy(&src, &dst).await?;
+                }
+            }
+        }
+        let _ = tokio::fs::remove_dir_all(&backup_dir).await;
+
+        if !result.status.success() {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            return Err(anyhow!("filter-branch failed: {stderr}"));
+        }
+
+        // Remove the backup refs created by filter-branch
+        self.cleanup_filter_branch_refs().await;
+
+        // Run gc to free space
+        let _ = Command::new("git")
+            .args(["reflog", "expire", "--expire=now", "--all"])
+            .current_dir(&self.cwd)
+            .output()
+            .await;
+        let _ = Command::new("git")
+            .args(["gc", "--prune=now", "--aggressive"])
+            .current_dir(&self.cwd)
+            .output()
+            .await;
+
+        Ok(())
+    }
+
+    async fn stash_if_dirty(&self) -> Result<bool> {
+        let output = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        let text = String::from_utf8(output.stdout)?;
+        if text.trim().is_empty() {
+            return Ok(false);
+        }
+        let stash = Command::new("git")
+            .args([
+                "stash",
+                "push",
+                "--include-untracked",
+                "-m",
+                "git-raft-purge",
+            ])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        if !stash.status.success() {
+            let stderr = String::from_utf8_lossy(&stash.stderr);
+            return Err(anyhow!("git stash failed: {stderr}"));
+        }
+        Ok(true)
+    }
+
+    async fn stash_pop(&self) -> Result<()> {
+        let output = Command::new("git")
+            .args(["stash", "pop"])
+            .current_dir(&self.cwd)
+            .output()
+            .await?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("git stash pop failed: {stderr}"));
+        }
+        Ok(())
+    }
+
+    async fn cleanup_filter_branch_refs(&self) {
+        let output = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname)", "refs/original/"])
+            .current_dir(&self.cwd)
+            .output()
+            .await;
+        if let Ok(output) = output {
+            if output.status.success() {
+                if let Ok(refs) = String::from_utf8(output.stdout) {
+                    for ref_name in refs.lines().filter(|l| !l.trim().is_empty()) {
+                        let _ = Command::new("git")
+                            .args(["update-ref", "-d", ref_name])
+                            .current_dir(&self.cwd)
+                            .output()
+                            .await;
+                    }
+                }
+            }
+        }
     }
 
     pub async fn force_push_with_lease(&self) -> Result<()> {
