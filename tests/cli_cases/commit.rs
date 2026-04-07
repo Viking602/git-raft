@@ -1376,6 +1376,45 @@ fn commit_language_flag_overrides_config_language() {
 }
 
 #[test]
+fn commit_language_flag_enforces_zh_when_ai_returns_english_subject() {
+    let repo = init_repo();
+    fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
+    fs::write(repo.path().join("src/auth/mod.rs"), "pub fn login() {}\n").expect("write auth");
+
+    let (server, output) = run_commit_with_mock_ai(
+        repo.path(),
+        vec![ai_commit_plan_response(
+            serde_json::json!([commit_group(
+                Some("auth"),
+                &["src/auth/mod.rs"],
+                "feat(auth): add auth login",
+                "group auth file",
+            )]),
+            0.92,
+        )],
+        "language = \"en\"",
+        "",
+        &["--json", "commit", "--plan", "--lang", "zh"],
+    );
+    assert!(output.status.success(), "commit plan failed: {:?}", output);
+    let events = parse_events(&output.stdout);
+    let result = find_tool_result(&events, "commit_plan");
+    let groups = result["data"]["plan"]["groups"]
+        .as_array()
+        .expect("groups array");
+    assert_eq!(groups.len(), 1);
+    assert_eq!(
+        groups[0]["commit_message"],
+        "feat(auth): 更新 auth 相关改动"
+    );
+    let request = first_ai_user_request(&server);
+    assert_eq!(
+        request["user_payload"]["format_preferences"]["language"],
+        "zh"
+    );
+}
+
+#[test]
 fn commit_plan_includes_body_by_default() {
     let repo = init_repo();
     fs::create_dir_all(repo.path().join("src/auth")).expect("mkdir auth");
