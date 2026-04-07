@@ -53,6 +53,7 @@ fn format_message(
     let summary = intent
         .map(str::trim)
         .filter(|value| !value.is_empty())
+        .filter(|value| summary_matches_language(value, language))
         .map(|value| value.to_string())
         .unwrap_or_else(|| default_summary(scope, files, language));
     let commit_type = infer_commit_type(intent, files);
@@ -116,9 +117,9 @@ fn build_footer(files: &[String]) -> String {
 fn default_summary(scope: Option<&str>, files: &[String], language: &str) -> String {
     match language {
         "zh" => match scope {
-            Some(scope) => format!("鏇存柊 {scope} 鐩稿叧鏀瑰姩"),
-            None if !files.is_empty() => format!("鏇存柊 {}", files[0]),
-            None => "鏇存柊鏀瑰姩".to_string(),
+            Some(scope) => format!("更新 {scope} 相关改动"),
+            None if !files.is_empty() => format!("更新 {}", files[0]),
+            None => "更新改动".to_string(),
         },
         _ => match scope {
             Some(scope) => format!("update {scope} changes"),
@@ -133,6 +134,32 @@ fn normalized_commit_language(language: &str) -> &str {
         "zh" | "zh-cn" | "zh-hans" | "chinese" | "涓枃" => "zh",
         _ => "en",
     }
+}
+
+fn summary_matches_language(summary: &str, language: &str) -> bool {
+    match language {
+        "zh" => contains_cjk(summary),
+        _ => !contains_cjk(summary),
+    }
+}
+
+fn contains_cjk(summary: &str) -> bool {
+    summary.chars().any(is_cjk)
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xF900..=0xFAFF
+            | 0x20000..=0x2A6DF
+            | 0x2A700..=0x2B73F
+            | 0x2B740..=0x2B81F
+            | 0x2B820..=0x2CEAF
+            | 0x2EBF0..=0x2EE5F
+            | 0x3007
+    )
 }
 
 fn infer_commit_type(intent: Option<&str>, files: &[String]) -> String {
