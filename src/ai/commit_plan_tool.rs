@@ -10,11 +10,66 @@ pub(super) fn extract_commit_plan_tool_args(
 ) -> Result<CommitPlan> {
     let tool_call = find_tool_call(response, "plan_commit")
         .ok_or_else(|| anyhow!("AI response did not include plan_commit tool call"))?;
-    let mut arguments: Value = serde_json::from_str(&tool_call.function.arguments)
+    let raw = sanitize_json_arguments(&tool_call.function.arguments);
+    let mut arguments: Value = serde_json::from_str(&raw)
         .context("AI response was not valid commit plan tool arguments")?;
     normalize_commit_plan_arguments(&mut arguments)?;
     serde_json::from_value(arguments)
         .context("AI response was not valid commit plan tool arguments")
+}
+
+/// Strip trailing garbage after the top-level JSON object.
+/// Some models emit extra whitespace, markdown fences, or duplicate fragments.
+fn sanitize_json_arguments(raw: &str) -> String {
+    let trimmed = raw.trim();
+    // Strip markdown code fences if present
+    let trimmed = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let trimmed = trimmed.strip_suffix("```").unwrap_or(trimmed).trim();
+
+    // Find the end of the first balanced top-level JSON object
+    if let Some(end) = find_json_object_end(trimmed) {
+        trimmed[..=end].to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+/// Find the byte index of the closing `}` that balances the first `{`.
+/// Respects JSON string escaping.
+fn find_json_object_end(s: &str) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escape_next = false;
+
+    for (i, ch) in s.char_indices() {
+        if escape_next {
+            escape_next = false;
+            continue;
+        }
+        if in_string {
+            match ch {
+                '\\' => escape_next = true,
+                '"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 pub(super) fn extract_resolve_conflicts_tool_args(

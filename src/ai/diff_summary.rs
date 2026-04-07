@@ -1,5 +1,17 @@
 use crate::git::DiffStat;
 
+/// Truncate a string to at most `max_bytes` without splitting a multi-byte character.
+fn truncate_to_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 /// Max summary length per file in bytes.
 const PER_FILE_SUMMARY_LIMIT: usize = 512;
 /// Max total summary length in bytes.
@@ -130,7 +142,7 @@ fn summarize_new_file(path: &str, content: &str) -> String {
             .take(3)
             .collect();
         for hint in hints {
-            let display = if hint.len() > 80 { &hint[..80] } else { hint };
+            let display = truncate_to_char_boundary(hint, 80);
             summary.push_str(&format!("  | {display}\n"));
         }
     }
@@ -262,7 +274,7 @@ fn truncate_symbol(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        format!("{}...", truncate_to_char_boundary(s, max))
     }
 }
 
@@ -270,6 +282,6 @@ fn truncate_str(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...\n", &s[..max])
+        format!("{}...\n", truncate_to_char_boundary(s, max))
     }
 }
