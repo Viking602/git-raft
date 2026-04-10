@@ -145,13 +145,13 @@ fn commit_help_lists_planner_flags_and_language_values() {
     assert!(stdout.contains("Preview the planned commit execution without creating commits"));
     assert!(stdout.contains("--yes"));
     assert!(stdout.contains("Extra guidance passed to the AI commit planner"));
-    assert!(stdout.contains("Override the configured commit subject language for this run"));
+    assert!(stdout.contains("Override the configured commit message language for this run"));
     assert!(stdout.contains("--lang <LANGUAGE>"));
     assert!(!stdout.contains("--language"));
     assert!(stdout.contains("currently ignored by the commit planner"));
     assert!(stdout.contains("Possible values:"));
-    assert!(stdout.contains("Generate commit subjects in English"));
-    assert!(stdout.contains("Generate commit subjects in Chinese"));
+    assert!(stdout.contains("Generate commit messages in English"));
+    assert!(stdout.contains("Generate commit messages in Chinese"));
     assert!(stdout.contains("-h, --help"));
 }
 

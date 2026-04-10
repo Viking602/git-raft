@@ -352,7 +352,7 @@ fn commit_collapses_to_single_group_when_split_confidence_is_below_threshold() {
         .output()
         .expect("git log");
     let subject = String::from_utf8(log.stdout).expect("utf8");
-    assert!(subject.contains("feat: update auth changes"));
+    assert!(subject.contains("feat(auth): update auth changes"));
 }
 
 #[test]
@@ -793,6 +793,11 @@ fn commit_plan_request_prompt_rejects_low_signal_subjects() {
     assert!(system_prompt.contains(
         "For documentation-only changes, name the topic, command, behavior, or workflow"
     ));
+    assert!(system_prompt.contains("更新 metadata 相关改动"));
+    assert!(
+        system_prompt
+            .contains("both the subject and every bullet in the body must be written in Chinese")
+    );
 }
 
 #[test]
