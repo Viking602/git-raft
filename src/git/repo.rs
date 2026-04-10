@@ -42,6 +42,19 @@ impl GitExec {
         }))
     }
 
+    pub async fn current_branch(&self) -> Result<String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&self.cwd)
+            .output()
+            .await
+            .context("failed to detect current branch")?;
+        if !output.status.success() {
+            return Err(anyhow!("failed to detect current branch"));
+        }
+        Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    }
+
     pub async fn create_backup_ref(&self, run_id: uuid::Uuid) -> Result<String> {
         let backup_ref = format!("refs/git-raft/backups/{run_id}");
         let output = Command::new("git")
