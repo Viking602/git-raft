@@ -248,6 +248,9 @@ impl AiClient {
             "\n- Commit subjects must explain the actual change or outcome, not the size of the diff.",
         );
         prompt.push_str(
+            "\n- Follow the requested commit message language for both the subject and the body. If the requested language is Chinese (`zh`), both the subject and every bullet in the body must be written in Chinese.",
+        );
+        prompt.push_str(
             "\n- The commit_message MUST include a body (after a blank line following the subject). The body MUST list the key changes extracted from change_summary, for example:",
         );
         prompt.push_str(
@@ -263,6 +266,9 @@ impl AiClient {
         );
         prompt.push_str(
             "\n- Avoid low-signal subjects such as `add 54 lines of documentation`, `update README`, `misc changes`, or `address feedback`.",
+        );
+        prompt.push_str(
+            "\n- Also avoid scope-placeholder subjects such as `update metadata changes` or `更新 metadata 相关改动` when change_summary provides a more specific action or identifier.",
         );
         prompt.push_str(
             "\n- For documentation-only changes, name the topic, command, behavior, or workflow that was documented.",
