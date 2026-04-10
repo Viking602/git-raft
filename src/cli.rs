@@ -34,7 +34,7 @@ pub enum CommandKind {
         /// Extra guidance passed to the AI commit planner.
         #[arg(long)]
         intent: Option<String>,
-        /// Override the configured commit subject language for this run.
+        /// Override the configured commit message language for this run.
         #[arg(long = "lang", value_enum, value_name = "LANGUAGE")]
         lang: Option<CommitLanguageArg>,
         /// Accepted after -- for compatibility; currently ignored by the commit planner.
@@ -98,6 +98,24 @@ pub enum CommandKind {
         #[arg(long)]
         push: bool,
     },
+    /// Push to remote with automatic pull and AI conflict resolution on rejection.
+    Push {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+        /// Refspec to push (default: current branch).
+        #[arg(value_name = "REFSPEC")]
+        refspec: Option<String>,
+        /// Pull strategy when push is rejected: rebase (default) or merge.
+        #[arg(long, value_enum, default_value_t = PushStrategy::Rebase)]
+        strategy: PushStrategy,
+        /// Maximum number of pull-then-push retries.
+        #[arg(long, default_value_t = 1)]
+        max_retries: u32,
+        /// Force push to remote.
+        #[arg(long)]
+        force: bool,
+    },
     /// Set project-level commit author and rewrite recent commits with wrong author.
     Author {
         /// Author name for this project.
@@ -116,10 +134,18 @@ pub enum CommandKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PushStrategy {
+    #[value(help = "Pull with rebase before retrying push (default).")]
+    Rebase,
+    #[value(help = "Pull with merge before retrying push.")]
+    Merge,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CommitLanguageArg {
-    #[value(help = "Generate commit subjects in English.")]
+    #[value(help = "Generate commit messages in English.")]
     En,
-    #[value(help = "Generate commit subjects in Chinese.")]
+    #[value(help = "Generate commit messages in Chinese.")]
     Zh,
 }
 
@@ -139,6 +165,7 @@ impl CommandKind {
             Self::Branch { .. } => "branch",
             Self::Merge { .. } => "merge",
             Self::Rebase { .. } => "rebase",
+            Self::Push { .. } => "push",
             Self::Purge { .. } => "purge",
             Self::Author { .. } => "author",
         }

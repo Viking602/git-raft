@@ -4,3 +4,4 @@ pub(crate) mod branch;
 pub(crate) mod commit;
 pub(crate) mod merge_rebase;
 pub(crate) mod purge;
+pub(crate) mod push;

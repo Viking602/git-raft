@@ -4,6 +4,7 @@ use crate::commands::branch::{BranchRun, run_branch};
 use crate::commands::commit::{CommitRun, run_commit};
 use crate::commands::merge_rebase::{MergeRun, run_merge_like};
 use crate::commands::purge::{PurgeRun, run_purge};
+use crate::commands::push::{PushRun, run_push};
 use crate::config;
 use crate::events::Emitter;
 use crate::git::{self, GitExec};
@@ -223,6 +224,29 @@ async fn dispatch_command(
                     target,
                     args,
                     apply_ai,
+                },
+                resolved_config.clone(),
+                cwd.clone(),
+                repo.clone(),
+                store.clone(),
+                emitter,
+            )
+            .await
+        }
+        CommandKind::Push {
+            remote,
+            refspec,
+            strategy,
+            max_retries,
+            force,
+        } => {
+            run_push(
+                PushRun {
+                    remote,
+                    refspec,
+                    strategy,
+                    max_retries,
+                    force,
                 },
                 resolved_config.clone(),
                 cwd.clone(),
