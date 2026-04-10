@@ -31,6 +31,7 @@ pub fn classify(command: &CommandKind) -> RiskDecision {
         CommandKind::Author { force, push, .. } if *force && *push => {
             high("author rewrite with force push rewrites history and pushes to remote")
         }
+        CommandKind::Push { force, .. } if *force => high("force push overwrites remote history"),
         _ => low("command is safe enough to run without extra confirmation"),
     }
 }
